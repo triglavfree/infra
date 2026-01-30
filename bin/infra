@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+CMD="${1:-}"
+shift || true
+
+SERVICES="$@"
+[ -z "$SERVICES" ] && SERVICES="all"
+
+case "$CMD" in
+  up)
+    sh scripts/preflight.sh
+    for svc in $SERVICES; do
+      sh scripts/deploy.sh "$svc"
+    done
+    ;;
+  down)
+    for svc in $SERVICES; do
+      podman rm -f "$svc" 2>/dev/null || true
+    done
+    ;;
+  status)
+    podman ps
+    ;;
+  *)
+    echo "usage:"
+    echo "  infra up [service…|all]"
+    echo "  infra down [service…]"
+    echo "  infra status"
+    exit 1
+    ;;
+esac

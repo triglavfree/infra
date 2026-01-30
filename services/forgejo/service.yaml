@@ -1,0 +1,3 @@
+-p 3000:3000
+-v forgejo-data:/data
+forgejo/forgejo:latest

@@ -1,0 +1,2 @@
+FORGEJO__security__SECRET_KEY=changeme
+FORGEJO__database__DB_TYPE=sqlite3
