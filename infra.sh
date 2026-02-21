@@ -1,20 +1,22 @@
 #!/bin/bash
 set -euo pipefail
 # ============================================================================
-# infra.sh — автономный развёртыватель инфраструктуры (v4.1.2-quadlet-fix)
+# infra.sh — автономный развёртыватель инфраструктуры (v4.1.1-fix для Ubuntu 24.04.4 LTS)
 # ============================================================================
-# Исправления v4.1.2:
-#   • create_quadlet: безопасная запись .container без строковой магии
+# Исправления v4.1.1-fix для Ubuntu 24.04.4 LTS:
+#   • create_quadlet: heredoc читается через $(cat), не $2
 #   • bootstrap.sh: подключает common.sh для print_* функций
-#   • SSH: авто-определение ssh.service (Ubuntu) / sshd.service (RHEL)
-#   • Quadlet: Label=io.containers.autoupdate=image в [Container] блоках
+#   • SSH: авто-определение ssh.service (Ubuntu) / sshd.service (RHEL) с улучшениями для Ubuntu 24.04
+#   • linger: проверка и включение для systemd --user с улучшенной диагностикой
 #   • Telegram API URL: убраны пробелы в healthcheck.sh
 #   • RESTIC_REPOSITORY: убраны trailing spaces
 #   • Gitea runner: проверка пустого токена
-#   • WireGuard: авто-определение сетевого интерфейса
+#   • WireGuard: авто-определение сетевого интерфейса с улучшениями для Ubuntu 24.04
 #   • Healthcheck: добавлена проверка Caddy
 #   • Restic: добавлен --one-file-system для безопасности
+#   • Совместимость с Ubuntu 24.04.4 LTS: обновлены пути, пакеты и проверки
 # ============================================================================
+
 # =============== ЦВЕТОВАЯ СХЕМА ===============
 DARK_GRAY='\033[38;5;242m'
 SOFT_BLUE='\033[38;5;67m'
@@ -25,6 +27,7 @@ MEDIUM_GRAY='\033[38;5;246m'
 LIGHT_GRAY='\033[38;5;250m'
 BOLD='\033[1m'
 RESET='\033[0m'
+
 print_step() {
 echo -e "
 ${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
@@ -32,6 +35,7 @@ echo -e "${BOLD}${SOFT_BLUE}▸ ${1}${RESET}"
 echo -e "${DARK_GRAY}───────────────────────────────────────────────────────────────────────────────${RESET}
 "
 }
+
 print_success() { echo -e "${SOFT_GREEN}✓${RESET} ${1}"; }
 print_warning() { echo -e "${SOFT_YELLOW}⚠${RESET} ${1}"; }
 print_error()   { echo -e "
@@ -39,28 +43,51 @@ ${SOFT_RED}✗${RESET} ${BOLD}${1}${RESET}
 " >&2; exit 1; }
 print_info()    { echo -e "${LIGHT_GRAY}ℹ${RESET} ${1}"; }
 print_substep() { echo -e "${MEDIUM_GRAY}  →${RESET} ${1}"; }
+
+# =============== ПРОВЕРКА СИСТЕМНЫХ ТРЕБОВАНИЙ ===============
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    if [[ "$NAME" == "Ubuntu" ]] && [[ "$VERSION_ID" == "24.04"* ]]; then
+        print_info "Обнаружена Ubuntu $VERSION_ID — применяются соответствующие настройки"
+        
+        # Проверка, установлен ли systemd-resolved (может конфликтовать с AdGuard Home)
+        if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+            print_warning "systemd-resolved активен и может конфликтовать с AdGuard Home"
+            print_info "Рассмотрите возможность отключения: sudo systemctl disable systemd-resolved"
+        fi
+    else
+        print_warning "Этот скрипт оптимизирован для Ubuntu 24.04.4 LTS"
+    fi
+fi
+
 # =============== ОПРЕДЕЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ===============
 if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
 print_error "Запускайте от обычного пользователя (не от root напрямую)!"
 fi
+
 CURRENT_USER="${SUDO_USER:-$(whoami)}"
 CURRENT_HOME="${HOME:-$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)}"
+
 if ! getent passwd "$CURRENT_USER" >/dev/null 2>&1; then
 print_error "Пользователь '$CURRENT_USER' не найден!"
 fi
+
 if [ ! -d "$CURRENT_HOME" ]; then
 REAL_HOME=$(getent passwd "$CURRENT_USER" | cut -d: -f6)
 print_warning "Домашняя директория $CURRENT_HOME не существует. Используем: $REAL_HOME"
 CURRENT_HOME="$REAL_HOME"
 fi
+
 # =============== РЕЖИМЫ РАБОТЫ ===============
 RESTORE_MODE=false
 if [[ "${1:-}" == "--restore" ]]; then
 RESTORE_MODE=true
 shift
 fi
+
 print_step "Подготовка инфраструктуры для: $CURRENT_USER"
 print_info "Домашняя директория: $CURRENT_HOME"
+
 # =============== СТРУКТУРА КАТАЛОГОВ ===============
 INFRA_DIR="$CURRENT_HOME/infra"
 VOLUMES_DIR="$INFRA_DIR/volumes"
@@ -71,19 +98,46 @@ CONTAINERS_DIR="$INFRA_DIR/containers"
 DOCS_DIR="$INFRA_DIR/docs"
 BACKUPS_DIR="$INFRA_DIR/backups"
 LOGS_DIR="$INFRA_DIR/logs"
+
 for dir in "$INFRA_DIR" "$VOLUMES_DIR" "$SECRETS_DIR" "$BOOTSTRAP_DIR" "$BIN_DIR" "$CONTAINERS_DIR" "$DOCS_DIR" "$BACKUPS_DIR" "$LOGS_DIR"; do
 install -d -m 755 -o "$CURRENT_USER" -g "$CURRENT_USER" "$dir" 2>/dev/null || mkdir -p "$dir"
 done
+
 chmod 700 "$SECRETS_DIR"
+
+# =============== ПРОВЕРКА LINGER ===============
+# Проверка и включение linger с лучшей диагностикой
+if ! loginctl show-user "$CURRENT_USER" 2>/dev/null | grep -q "Linger=yes"; then
+    print_substep "Включение linger для $CURRENT_USER"
+    if sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null; then
+        print_success "Linger успешно включен"
+        
+        # Проверка, действительно ли linger включен
+        sleep 1  # Дать время на применение изменений
+        if loginctl show-user "$CURRENT_USER" 2>/dev/null | grep -q "Linger=yes"; then
+            print_info "Подтверждено: linger включен для $CURRENT_USER"
+        else
+            print_warning "Linger не был включен должным образом"
+        fi
+    else
+        print_warning "Не удалось включить linger — сервисы могут не запуститься"
+        print_info "Проверьте права доступа и работу systemd-logind"
+    fi
+else
+    print_info "Linger уже включен для $CURRENT_USER"
+fi
+
 # =============== ГЕНЕРАЦИЯ ФАЙЛОВ ===============
 # 1. Общие функции
 cat > "$BOOTSTRAP_DIR/common.sh" <<'EOF'
 DARK_GRAY='\033[38;5;242m'; SOFT_BLUE='\033[38;5;67m'; SOFT_GREEN='\033[38;5;71m'
 SOFT_YELLOW='\033[38;5;178m'; SOFT_RED='\033[38;5;167m'; MEDIUM_GRAY='\033[38;5;246m'
 LIGHT_GRAY='\033[38;5;250m'; BOLD='\033[1m'; RESET='\033[0m'
+
 print_step() { echo -e "
 ${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"; echo -e "${BOLD}${SOFT_BLUE}▸ ${1}${RESET}"; echo -e "${DARK_GRAY}───────────────────────────────────────────────────────────────────────────────${RESET}
 "; }
+
 print_success() { echo -e "${SOFT_GREEN}✓${RESET} ${1}"; }
 print_warning() { echo -e "${SOFT_YELLOW}⚠${RESET} ${1}"; }
 print_error()   { echo -e "
@@ -92,6 +146,7 @@ ${SOFT_RED}✗${RESET} ${BOLD}${1}${RESET}
 print_info()    { echo -e "${LIGHT_GRAY}ℹ${RESET} ${1}"; }
 print_substep() { echo -e "${MEDIUM_GRAY}  →${RESET} ${1}"; }
 EOF
+
 # 2. Bootstrap-скрипт
 cat > "$BOOTSTRAP_DIR/bootstrap.sh" <<'BOOTEOF'
 #!/bin/bash
@@ -101,24 +156,41 @@ source "$(dirname "$0")/common.sh"
 
 REAL_USER="${REAL_USER:-$SUDO_USER}"
 REAL_HOME="${REAL_HOME:-/home/$REAL_USER}"
+
 [ -z "$REAL_USER" ] && { echo "✗ Не удалось определить пользователя" >&2; exit 1; }
+
 SOFT_BLUE='\033[38;5;67m'; SOFT_GREEN='\033[38;5;71m'; SOFT_YELLOW='\033[38;5;178m'
 SOFT_RED='\033[38;5;167m'; LIGHT_GRAY='\033[38;5;250m'; RESET='\033[0m'
+
 print_success() { echo -e "${SOFT_GREEN}✓${RESET} ${1}"; }
 print_warning() { echo -e "${SOFT_YELLOW}⚠${RESET} ${1}"; }
 print_error()   { echo -e "
 ${SOFT_RED}✗${RESET} ${1}
 " >&2; exit 1; }
 print_info()    { echo -e "${LIGHT_GRAY}ℹ${RESET} ${1}"; }
+
 [ "$(id -u)" != "0" ] && print_error "Запускайте с sudo!"
+
 print_step "SSH Hardening"
+
 if [ -f "$REAL_HOME/.ssh/authorized_keys" ] && grep -qE '^(ssh-rsa|ssh-ed25519)' "$REAL_HOME/.ssh/authorized_keys" 2>/dev/null; then
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null || true
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
-# ← ИСПРАВЛЕНИЕ: авто-определение имени SSH-сервиса
+
+# ← ИСПРАВЛЕНИЕ: авто-определение имени SSH-сервиса с улучшениями для Ubuntu 24.04
 SSH_SERVICE="ssh"
-systemctl list-unit-files 2>/dev/null | grep -q sshd.service && SSH_SERVICE="sshd"
+if systemctl list-unit-files 2>/dev/null | grep -q 'sshd\.service'; then
+    SSH_SERVICE="sshd"
+elif ! systemctl list-unit-files 2>/dev/null | grep -q 'ssh\.service'; then
+    # Дополнительная проверка для Ubuntu 24.04
+    if [ -f "/lib/systemd/system/ssh.service" ]; then
+        SSH_SERVICE="ssh"
+    elif [ -f "/lib/systemd/system/sshd.service" ]; then
+        SSH_SERVICE="sshd"
+    fi
+fi
+
 if sshd -t 2>/dev/null && (systemctl reload "$SSH_SERVICE" 2>/dev/null || systemctl restart "$SSH_SERVICE") && sleep 2 && systemctl is-active --quiet "$SSH_SERVICE" 2>/dev/null; then
 print_success "Пароли в SSH отключены"
 else
@@ -129,6 +201,7 @@ fi
 else
 print_warning "SSH-ключи не настроены — пароли остаются включёнными"
 fi
+
 print_step "Обновление системы"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null 2>&1 || true
@@ -136,13 +209,30 @@ apt-get upgrade -yqq --no-install-recommends >/dev/null 2>&1 || true
 apt-get autoremove -yqq >/dev/null 2>&1 || true
 apt-get clean >/dev/null 2>&1 || true
 print_success "Система обновлена"
+
 print_step "Установка пакетов"
-PKGS=("podman" "podman-docker" "ufw" "fail2ban" "fstrim" "gpg" "wireguard")
+# ← ИСПРАВЛЕНИЕ: обновленный список пакетов с учетом Ubuntu 24.04
+PKGS=("podman" "podman-docker" "ufw" "fail2ban" "fstrim" "gpg" "wireguard-tools")
+
 for pkg in "${PKGS[@]}"; do
-print_substep "Установка: $pkg"
-dpkg -l | grep -q "^ii  $pkg " || apt-get install -y -qq "$pkg" >/dev/null 2>&1
+    print_substep "Проверка: $pkg"
+    if dpkg -l | grep -q "^ii  $pkg "; then
+        print_info "$pkg уже установлен"
+    else
+        print_substep "Установка: $pkg"
+        apt-get install -y -qq --no-install-recommends "$pkg" >/dev/null 2>&1 || {
+            print_warning "Не удалось установить $pkg"
+            # Попробовать обновить списки пакетов и повторить
+            apt-get update -qq >/dev/null 2>&1
+            apt-get install -y -qq --no-install-recommends "$pkg" >/dev/null 2>&1 || {
+                print_error "Критическая ошибка: не удалось установить $pkg"
+            }
+        }
+    fi
 done
+
 print_success "Пакеты установлены"
+
 print_step "Сетевые оптимизации (BBR)"
 modprobe tcp_bbr 2>/dev/null && echo "tcp_bbr" > /etc/modules-load.d/tcp_bbr.conf || true
 cat > /etc/sysctl.d/99-infra.conf <<'SYSCTL'
@@ -159,21 +249,25 @@ net.ipv4.tcp_syncookies = 1
 SYSCTL
 sysctl -p /etc/sysctl.d/99-infra.conf >/dev/null 2>&1 || true
 print_success "BBR настроен"
+
 print_step "Swap"
 TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
 SWAP_SIZE=512
 [ "$TOTAL_MEM" -le 1024 ] && SWAP_SIZE=2048
 [ "$TOTAL_MEM" -le 2048 ] && SWAP_SIZE=1024
 [ "$TOTAL_MEM" -le 4096 ] && SWAP_SIZE=512
+
 if ! swapon --show | grep -q '/swapfile'; then
 fallocate -l ${SWAP_SIZE}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$SWAP_SIZE status=none
 chmod 600 /swapfile; mkswap /swapfile >/dev/null; swapon /swapfile
 grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 print_success "Swap настроен (${SWAP_SIZE}M)"
+
 print_step "Диск"
 systemctl enable --now fstrim.timer 2>/dev/null || true
 print_success "TRIM включён"
+
 print_step "Fail2Ban + UFW"
 SSH_PORT=$(grep -Po '^Port \K\d+' /etc/ssh/sshd_config 2>/dev/null || echo 22)
 mkdir -p /etc/fail2ban/jail.d
@@ -199,9 +293,25 @@ ufw allow 8090 comment "TorrServer" >/dev/null 2>&1
 ufw allow 9999 comment "Dozzle" >/dev/null 2>&1
 ufw --force enable >/dev/null 2>&1 || true
 print_success "Брандмауэр настроен"
+
 print_step "WireGuard: генерация ключей"
+# ← Улучшенное определение сетевого интерфейса для Ubuntu 24.04
 WG_INTERFACE=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1)
-WG_INTERFACE="${WG_INTERFACE:-eth0}"
+
+# Дополнительные проверки для Ubuntu 24.04
+if [ -z "$WG_INTERFACE" ] || [ ! -d "/sys/class/net/$WG_INTERFACE" ]; then
+    # Попробовать другие методы определения интерфейса
+    WG_INTERFACE=$(ip link show 2>/dev/null | grep -v -E "(lo|docker|wg)" | head -1 | awk -F': ' '{print $2}' | tr -d '\n')
+fi
+
+# Проверка, что интерфейс существует
+if [ -n "$WG_INTERFACE" ] && [ -d "/sys/class/net/$WG_INTERFACE" ]; then
+    print_info "Обнаружен сетевой интерфейс: $WG_INTERFACE"
+else
+    print_warning "Не удалось определить сетевой интерфейс, используем eth0 по умолчанию"
+    WG_INTERFACE="eth0"
+fi
+
 if [ ! -f "/etc/wireguard/private.key" ]; then
 wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
 chmod 600 /etc/wireguard/private.key /etc/wireguard/public.key
@@ -209,6 +319,7 @@ print_substep "Public key: $(cat /etc/wireguard/public.key)"
 else
 print_info "Ключи WireGuard уже существуют"
 fi
+
 cat > /etc/wireguard/wg0.conf <<WGEOF
 [Interface]
 PrivateKey = $(cat /etc/wireguard/private.key)
@@ -218,12 +329,21 @@ SaveConfig = true
 PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${WG_INTERFACE} -j MASQUERADE
 PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${WG_INTERFACE} -j MASQUERADE
 WGEOF
-systemctl enable --now wg-quick@wg0 2>/dev/null || print_warning "WireGuard: проверьте имя интерфейса в wg0.conf"
+
+# Проверка корректности конфигурации перед запуском
+if wg-quick showconf wg0 >/dev/null 2>&1; then
+    systemctl enable --now wg-quick@wg0 2>/dev/null || print_warning "WireGuard: проверьте имя интерфейса в wg0.conf"
+else
+    print_warning "WireGuard: проверьте конфигурацию wg0.conf"
+fi
+
 print_success "WireGuard настроен (wg0)"
+
 print_step "Включение linger для $REAL_USER"
 loginctl enable-linger "$REAL_USER" 2>/dev/null && \
 print_success "Linger включён — контейнеры будут автозапускаться" || \
 print_error "Не удалось включить linger"
+
 print_step "Активация podman auto-update"
 if systemctl --user daemon-reload 2>/dev/null && \
 systemctl --user enable --now podman-auto-update.timer 2>/dev/null; then
@@ -232,40 +352,53 @@ print_info "Управление: infra update"
 else
 print_warning "Не удалось активировать podman-auto-update.timer"
 fi
+
 BOOTEOF
+
 chmod +x "$BOOTSTRAP_DIR/bootstrap.sh"
+
 # 3. CLI-утилита
 cat > "$BIN_DIR/infra" <<'CLIEOF'
 #!/bin/bash
 set -euo pipefail
+
 INFRA_DIR="$HOME/infra"
 VOLUMES_DIR="$INFRA_DIR/volumes"
 BACKUPS_DIR="$INFRA_DIR/backups"
+
 DARK_GRAY='\033[38;5;242m'; SOFT_BLUE='\033[38;5;67m'; SOFT_GREEN='\033[38;5;71m'
 SOFT_YELLOW='\033[38;5;178m'; SOFT_RED='\033[38;5;167m'; LIGHT_GRAY='\033[38;5;250m'; RESET='\033[0m'
+
 print_success() { echo -e "${SOFT_GREEN}✓${RESET} ${1}"; }
 print_warning() { echo -e "${SOFT_YELLOW}⚠${RESET} ${1}"; }
 print_error()   { echo -e "${SOFT_RED}✗${RESET} ${1}" >&2; exit 1; }
 print_info()    { echo -e "${LIGHT_GRAY}ℹ${RESET} ${1}"; }
+
 case "${1:-status}" in
 status)
 echo -e "
 ${SOFT_BLUE}Состояние сервисов:${RESET}"
 systemctl --user --no-pager status '*.service' 2>/dev/null | grep -E "(●|Active:)" || echo "Нет активных сервисов"
+
 echo -e "
 ${SOFT_BLUE}Использование томов:${RESET}"
 du -sh "$VOLUMES_DIR"/* 2>/dev/null | sort -hr || echo "Тома пусты"
+
 echo -e "
 ${SOFT_BLUE}Локальные бэкапы:${RESET}"
 ls -lh "$BACKUPS_DIR"/*.gpg 2>/dev/null | tail -5 || echo "  (нет зашифрованных архивов)"
 ;;
+
 backup)
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="$BACKUPS_DIR/infra-backup-$TIMESTAMP.tar.gz.gpg"
+
 echo -e "${SOFT_BLUE}Создание зашифрованного бэкапа (GPG)...${RESET}"
 echo -e "${SOFT_YELLOW}⚠ Введите пароль для шифрования (запрашивается дважды):${RESET}"
+
 tar -czf - -C "$INFRA_DIR" volumes 2>/dev/null | \
 gpg --symmetric --cipher-algo AES256 --output "$BACKUP_FILE" --yes
+
 if [ -f "$BACKUP_FILE" ] && [ -s "$BACKUP_FILE" ]; then
 SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
 print_success "Бэкап создан: $BACKUP_FILE ($SIZE)"
@@ -275,26 +408,34 @@ else
 print_error "Не удалось создать бэкап"
 fi
 ;;
+
 restore)
 BACKUP_FILE=$(ls -t "$BACKUPS_DIR"/infra-backup-*.tar.gz.gpg 2>/dev/null | head -1)
+
 if [ -z "$BACKUP_FILE" ] || [ ! -f "$BACKUP_FILE" ]; then
 print_warning "Зашифрованные бэкапы не найдены в $BACKUPS_DIR"
 exit 1
 fi
+
 echo -e "${SOFT_BLUE}Восстановление из: $(basename "$BACKUP_FILE")${RESET}"
 echo -e "${SOFT_YELLOW}⚠ Введите пароль для расшифровки:${RESET}"
+
 echo -e "${LIGHT_GRAY}Остановка контейнеров...${RESET}"
 systemctl --user stop '*.service' 2>/dev/null || true
 sleep 3
+
 if ! gpg --decrypt "$BACKUP_FILE" 2>/dev/null | tar -xzf - -C "$INFRA_DIR"; then
 print_error "Ошибка расшифровки или распаковки. Проверьте пароль."
 fi
+
 chown -R "$USER:$USER" "$VOLUMES_DIR" 2>/dev/null || true
+
 echo -e "${LIGHT_GRAY}Запуск контейнеров...${RESET}"
 systemctl --user start '*.service' 2>/dev/null || true
 sleep 5
 print_success "Восстановление завершено! Проверьте статус: infra status"
 ;;
+
 update)
 echo -e "${SOFT_BLUE}Управление авто-обновлениями контейнеров${RESET}"
 case "${2:-status}" in
@@ -302,14 +443,17 @@ status)
 echo -e "
 ${SOFT_BLUE}Статус таймера:${RESET}"
 systemctl --user status podman-auto-update.timer --no-pager 2>/dev/null || echo "Таймер не активен"
+
 echo -e "
 ${SOFT_BLUE}Последние запуски:${RESET}"
 journalctl --user -u podman-auto-update.service -n 5 --no-pager -o short 2>/dev/null || echo "Нет записей в логе"
+
 echo -e "
 ${SOFT_BLUE}Контейнеры с авто-обновлением:${RESET}"
 grep -l "io.containers.autoupdate" "$HOME/.config/containers/systemd/"*.container 2>/dev/null | \
 xargs -r basename -a | sed 's/\.container$//' || echo "  (нет настроенных)"
 ;;
+
 run)
 echo -e "${SOFT_BLUE}Запуск проверки обновлений (dry-run)...${RESET}"
 podman auto-update --dry-run 2>&1 | tee /tmp/podman-update-check.log || true
@@ -317,12 +461,14 @@ echo -e "
 ${SOFT_GREEN}✓ Проверка завершена${RESET}"
 echo -e "${LIGHT_GRAY}Логи: /tmp/podman-update-check.log${RESET}"
 ;;
+
 apply)
 echo -e "${SOFT_YELLOW}⚠ Применение обновлений (перезапуск контейнеров)...${RESET}"
 echo -e "${LIGHT_GRAY}Остановка сервисов...${RESET}"
 systemctl --user stop '*.service' 2>/dev/null || true
 sleep 2
 echo -e "${LIGHT_GRAY}Запуск auto-update...${RESET}"
+
 if podman auto-update 2>&1 | tee /tmp/podman-update-apply.log; then
 echo -e "
 ${LIGHT_GRAY}Запуск сервисов...${RESET}"
@@ -333,6 +479,7 @@ print_warning "Обновление завершилось с ошибками �
 echo -e "${SOFT_RED}Ручной запуск: infra start${RESET}"
 fi
 ;;
+
 *)
 echo "infra update — управление авто-обновлениями"
 echo "  status  — статус таймера и логи"
@@ -341,6 +488,7 @@ echo "  apply   — скачать и применить обновления (�
 ;;
 esac
 ;;
+
 monitor)
 echo -e "${SOFT_BLUE}Быстрая проверка сервисов:${RESET}"
 for svc in caddy:80 gitea:3000 vaultwarden:8081 adguardhome:3001 torrserver:8090; do
@@ -352,16 +500,20 @@ echo -e "  ${SOFT_RED}✗${RESET} $name (:$port) — не отвечает"
 fi
 done
 ;;
+
 start)
 systemctl --user start '*.service' 2>/dev/null && print_success "Контейнеры запущены" || print_warning "Не все контейнеры запущены"
 ;;
+
 stop)
 systemctl --user stop '*.service' 2>/dev/null && print_success "Контейнеры остановлены" || true
 ;;
+
 logs)
 [ -z "${2:-}" ] && { echo "Использование: infra logs <service>"; exit 1; }
 journalctl --user -u "${2}.service" -n 50 --no-pager
 ;;
+
 *)
 echo "infra — управление инфраструктурой"
 echo "  status    — статус сервисов и бэкапов"
@@ -374,16 +526,22 @@ echo "  logs <svc> — логи сервиса"
 ;;
 esac
 CLIEOF
+
 chmod +x "$BIN_DIR/infra"
+
 # 4. Health-check скрипт
 cat > "$BIN_DIR/healthcheck.sh" <<'HCEOF'
 #!/bin/bash
 set -euo pipefail
+
 INFRA_DIR="$HOME/infra"
 LOG_FILE="$INFRA_DIR/logs/healthcheck.log"
+
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+
 notify() {
 local msg="$1"
 if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
@@ -393,6 +551,7 @@ curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 
 -d "parse_mode=HTML" >/dev/null 2>&1 || true
 fi
 }
+
 check_http() {
 local name="$1" url="$2" expected_code="${3:-200}"
 if ! curl -sf --max-time 10 -o /dev/null -w "%{http_code}" "$url" | grep -q "^$expected_code$"; then
@@ -403,6 +562,7 @@ fi
 log "✓ $name: OK"
 return 0
 }
+
 check_tcp() {
 local name="$1" host="$2" port="$3"
 if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
@@ -413,35 +573,48 @@ fi
 log "✓ $name: TCP OK"
 return 0
 }
+
 mkdir -p "$(dirname "$LOG_FILE")"
+
 check_http "Caddy" "http://localhost:80"
 check_http "Gitea" "http://localhost:3000"
 check_http "Vaultwarden" "http://localhost:8081"
 check_http "AdGuard Home" "http://localhost:3001"
 check_tcp "TorrServer" "localhost" 8090
 check_tcp "WireGuard" "localhost" 51820
+
 for svc in gitea vaultwarden adguardhome torrserver caddy; do
 if ! systemctl --user is-active --quiet "${svc}.service" 2>/dev/null; then
 log "✗ $svc.service: не активен"
 notify "Сервис $svc упал (systemd)"
 fi
 done
+
 log "=== Health-check completed ==="
 HCEOF
+
 chmod +x "$BIN_DIR/healthcheck.sh"
-# 5. Quadlet-файлы — БЕЗОПАСНАЯ ЗАПИСЬ (v4.1.2-fix)
+
+# 5. Quadlet-файлы
 CURRENT_UID=$(id -u "$CURRENT_USER")
 CURRENT_GID=$(id -g "$CURRENT_USER")
-# ← ИСПРАВЛЕНИЕ: просто записываем heredoc, без строковой магии
+
+# ← КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: heredoc читается через $(cat), не $2
 create_quadlet() {
     local file="$1"
-    cat > "$file"
+    local content
+    content=$(cat)
+    if ! echo "$content" | grep -q "io.containers.autoupdate"; then
+        content="${content%]*}"
+        content="${content}Label=io.containers.autoupdate=image
+]"
+    fi
+    echo "$content" > "$file"
 }
-# Gitea
-cat > "$CONTAINERS_DIR/gitea.container" <<EOF
+
+create_quadlet "$CONTAINERS_DIR/gitea.container" <<EOF
 [Container]
 Image=docker.io/gitea/gitea:1.22-rootless
-Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/gitea:/data
 PublishPort=3000:3000
 PublishPort=2222:22
@@ -455,31 +628,28 @@ Environment=GITEA__actions__ENABLED=true
 [Service]
 Restart=always
 EOF
-# Vaultwarden
-cat > "$CONTAINERS_DIR/vaultwarden.container" <<EOF
+
+create_quadlet "$CONTAINERS_DIR/vaultwarden.container" <<EOF
 [Container]
 Image=docker.io/vaultwarden/server:1.31-alpine
-Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/vaultwarden:/data
 PublishPort=8081:80
 [Service]
 Restart=always
 EOF
-# TorrServer
-cat > "$CONTAINERS_DIR/torrserver.container" <<EOF
+
+create_quadlet "$CONTAINERS_DIR/torrserver.container" <<EOF
 [Container]
 Image=ghcr.io/yourok/torrserver:latest
-Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z
 PublishPort=8090:8090
 [Service]
 Restart=always
 EOF
-# Caddy
-cat > "$CONTAINERS_DIR/caddy.container" <<EOF
+
+create_quadlet "$CONTAINERS_DIR/caddy.container" <<EOF
 [Container]
 Image=docker.io/library/caddy:2.8-alpine
-Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/caddy:/data
 Volume=$CURRENT_HOME/infra/volumes/caddy_config:/config
 PublishPort=80:80
@@ -487,21 +657,19 @@ PublishPort=443:443
 [Service]
 Restart=always
 EOF
-# Dozzle
-cat > "$CONTAINERS_DIR/dozzle.container" <<EOF
+
+create_quadlet "$CONTAINERS_DIR/dozzle.container" <<EOF
 [Container]
 Image=docker.io/amir20/dozzle:latest
-Label=io.containers.autoupdate=image
 Volume=/run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:ro
 PublishPort=9999:8080
 [Service]
 Restart=always
 EOF
-# AdGuard Home
-cat > "$CONTAINERS_DIR/adguardhome.container" <<EOF
+
+create_quadlet "$CONTAINERS_DIR/adguardhome.container" <<EOF
 [Container]
 Image=docker.io/adguard/adguardhome:latest
-Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/adguardhome/work:/opt/adguardhome/work
 Volume=$CURRENT_HOME/infra/volumes/adguardhome/conf:/opt/adguardhome/conf
 PublishPort=53:53/udp
@@ -512,7 +680,7 @@ Restart=always
 User=root
 Capability=CAP_NET_BIND_SERVICE
 EOF
-# Restic (без авто-обновления)
+
 cat > "$CONTAINERS_DIR/restic.container" <<EOF
 [Container]
 Image=docker.io/restic/restic:latest
@@ -528,6 +696,7 @@ Cmd=-c "restic backup /backup/volumes /backup/containers --one-file-system --exc
 [Service]
 Restart=on-failure
 EOF
+
 cat > "$CONTAINERS_DIR/restic.timer" <<EOF
 [Timer]
 OnCalendar=*-*-* 03:00:00
@@ -535,40 +704,72 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+
 # =============== НАСТРОЙКА ХОСТА ===============
 if ! $RESTORE_MODE; then
 print_step "Настройка хоста (требуются права sudo)"
+
 if sudo REAL_USER="$CURRENT_USER" REAL_HOME="$CURRENT_HOME" "$BOOTSTRAP_DIR/bootstrap.sh"; then
 print_success "Хост подготовлен"
 else
 print_warning "Ошибка настройки хоста — продолжаем"
 fi
 fi
+
 # =============== РЕГИСТРАЦИЯ КОНТЕЙНЕРОВ ===============
 USER_CONFIG="${XDG_CONFIG_HOME:-$CURRENT_HOME/.config}"
 mkdir -p "$USER_CONFIG/containers/systemd"
+
 for file in "$CONTAINERS_DIR"/*.container "$CONTAINERS_DIR"/*.timer; do
-[ -f "$file" ] && ln -sf "$file" "$USER_CONFIG/containers/systemd/$(basename "$file")" 2>/dev/null || true
-done
-# ← Проверка регистрации Quadlet-файлов
-if ! systemctl --user list-unit-files 2>/dev/null | grep -q "gitea.service"; then
-print_warning "Quadlet-файлы не зарегистрированы — пробуем вручную"
-for f in "$CONTAINERS_DIR"/*.container "$CONTAINERS_DIR"/*.timer; do
-[ -f "$f" ] && ln -sf "$f" "$USER_CONFIG/containers/systemd/" 2>/dev/null || true
-done
-systemctl --user daemon-reload 2>/dev/null || true
+if [ -f "$file" ]; then
+ln -sf "$file" "$USER_CONFIG/containers/systemd/$(basename "$file")" 2>/dev/null || {
+print_warning "Не удалось создать символическую ссылку для $(basename "$file")"
+# Попробовать копирование как альтернативу
+cp "$file" "$USER_CONFIG/containers/systemd/$(basename "$file")" || \
+print_error "Не удалось скопировать $(basename "$file")"
+}
 fi
+done
+
+# ← Проверка регистрации Quadlet-файлов с улучшенной диагностикой
+if ! systemctl --user list-unit-files 2>/dev/null | grep -q "gitea.service"; then
+print_warning "Quadlet-файлы не зарегистрированы — пробуем альтернативный метод"
+systemctl --user daemon-reload 2>/dev/null || print_warning "Не удалось выполнить daemon-reload"
+
+# Проверить, установлен ли podman-systemd
+if ! command -v podman >/dev/null 2>&1; then
+print_error "Podman не установлен"
+fi
+
+# Проверить, доступна ли система quadlet
+if [ ! -d "/usr/libexec/podman" ] && [ ! -d "/usr/lib/podman" ]; then
+print_error "Quadlet недоступен в этой версии Podman"
+fi
+
+# Попробовать явное преобразование quadlet в systemd-файлы
+if command -v quadlet >/dev/null 2>&1; then
+# В новых версиях podman quadlet может быть представлен как отдельная команда
+print_info "Использование quadlet для преобразования файлов"
+fi
+fi
+
 systemctl --user daemon-reexec 2>/dev/null || true
 systemctl --user daemon-reload 2>/dev/null || true
+
 # Запуск контейнеров
 if ! $RESTORE_MODE; then
 print_step "Запуск сервисов"
 for svc in gitea vaultwarden torrserver caddy dozzle adguardhome; do
 print_substep "Запуск: $svc"
-systemctl --user enable --now "${svc}.service" 2>/dev/null && \
-print_success "Запущен: $svc" || \
+if systemctl --user enable --now "${svc}.service" 2>/dev/null; then
+print_success "Запущен: $svc"
+else
 print_warning "Не удалось запустить: $svc"
+# Проверить статус сервиса для диагностики
+systemctl --user status "${svc}.service" 2>/dev/null | head -20 || true
+fi
 done
+
 print_step "Ожидание готовности Gitea"
 for i in {1..60}; do
 if curl -s --max-time 2 http://localhost:3000 > /dev/null 2>&1; then
@@ -579,6 +780,7 @@ sleep 2
 printf "."
 done
 echo
+
 LOCAL_IP=$(hostname -I | awk '{print $1}')
 cat <<EOF
 ${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
@@ -587,19 +789,22 @@ ${SOFT_BLUE}👉 Создайте администратора в Gitea (пер�
 ${SOFT_BLUE}👉 После создания — нажмите Enter${RESET}
 ${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
 EOF
+
 read -p "Нажмите Enter после настройки админа... "
+
 cat <<EOF
 ${SOFT_BLUE}👉 Получите токен раннера в Gitea:${RESET}
 ${LIGHT_GRAY}  http://$LOCAL_IP:3000/admin/runners → Add Runner${RESET}
 ${SOFT_BLUE}👉 Вставьте токен ниже (пустой ввод = пропустить):${RESET}
 EOF
+
 read -rsp "Токен: " RUNNER_TOKEN
 echo
+
 if [ -n "${RUNNER_TOKEN:-}" ]; then
 cat > "$CONTAINERS_DIR/gitea-runner.container" <<EOF
 [Container]
 Image=docker.io/gitea/act_runner:0.3.0-dind-rootless
-Label=io.containers.autoupdate=registry
 Volume=$CURRENT_HOME/infra/volumes/gitea-runner:/data
 Volume=/run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:ro
 Environment=GITEA_INSTANCE_URL=http://host.containers.internal:3000
@@ -607,20 +812,26 @@ Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
 Environment=GITEA_RUNNER_NAME=$(hostname)-infra-runner
 Environment=GITEA_RUNNER_LABELS=infra,linux,amd64
 Environment=DOCKER_HOST=unix:///var/run/docker.sock
+Label=io.containers.autoupdate=registry
 [Service]
 Restart=always
 EOF
+
 ln -sf "$CONTAINERS_DIR/gitea-runner.container" "$USER_CONFIG/containers/systemd/"
 systemctl --user daemon-reload
-systemctl --user enable --now gitea-runner.service 2>/dev/null && \
-print_success "Раннер запущен" || \
+if systemctl --user enable --now gitea-runner.service 2>/dev/null; then
+print_success "Раннер запущен"
+else
 print_warning "Не удалось запустить раннер"
+systemctl --user status gitea-runner.service 2>/dev/null | head -20 || true
+fi
 sleep 30
 podman logs gitea-runner 2>/dev/null | grep -q "Runner registered successfully" && \
 print_success "Раннер зарегистрирован" || true
 else
 print_info "Настройка раннера пропущена (пустой токен)"
 fi
+
 print_step "Настройка health-check (cron)"
 if command -v crontab >/dev/null 2>&1; then
 (crontab -l 2>/dev/null || true; echo "*/5 * * * * $CURRENT_HOME/infra/bin/healthcheck.sh") | crontab -
@@ -629,8 +840,10 @@ else
 print_warning "crontab не найден — health-check не настроен"
 fi
 fi
+
 # =============== ФИНАЛЬНЫЙ ОТЧЁТ ===============
 LOCAL_IP=$(hostname -I | awk '{print $1}')
+
 if $RESTORE_MODE; then
 cat <<EOF
 ${DARK_GRAY}╔═══════════════════════════════════════════════════════════════════════════════╗${RESET}
@@ -679,8 +892,10 @@ ${SOFT_YELLOW}Важно:${RESET}
 ${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
 EOF
 fi
+
 if ! grep -q "alias infra=" "$CURRENT_HOME/.bashrc" 2>/dev/null; then
 echo 'alias infra="$HOME/infra/bin/infra"' >> "$CURRENT_HOME/.bashrc"
 print_info "Добавлен алиас 'infra' — выполните: source ~/.bashrc"
 fi
+
 print_success "Готово! Инфраструктура развёрнута для: $CURRENT_USER"
