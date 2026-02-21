@@ -3,10 +3,11 @@ set -euo pipefail
 # ============================================================================
 # infra.sh — автономный развёртыватель инфраструктуры (v4.1.1-fix)
 # ============================================================================
-# Исправления:
+# Исправления v4.1.1-fix:
 #   • create_quadlet: heredoc читается через $(cat), не $2
 #   • bootstrap.sh: подключает common.sh для print_* функций
 #   • SSH: авто-определение ssh.service (Ubuntu) / sshd.service (RHEL)
+#   • linger: проверка и включение для systemd --user
 #   • Telegram API URL: убраны пробелы в healthcheck.sh
 #   • RESTIC_REPOSITORY: убраны trailing spaces
 #   • Gitea runner: проверка пустого токена
@@ -74,6 +75,12 @@ for dir in "$INFRA_DIR" "$VOLUMES_DIR" "$SECRETS_DIR" "$BOOTSTRAP_DIR" "$BIN_DIR
 install -d -m 755 -o "$CURRENT_USER" -g "$CURRENT_USER" "$dir" 2>/dev/null || mkdir -p "$dir"
 done
 chmod 700 "$SECRETS_DIR"
+# =============== ПРОВЕРКА LINGER ===============
+if ! loginctl show-user "$CURRENT_USER" 2>/dev/null | grep -q "Linger=yes"; then
+print_substep "Включение linger для $CURRENT_USER"
+sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || \
+print_warning "Не удалось включить linger — сервисы могут не запуститься"
+fi
 # =============== ГЕНЕРАЦИЯ ФАЙЛОВ ===============
 # 1. Общие функции
 cat > "$BOOTSTRAP_DIR/common.sh" <<'EOF'
@@ -431,7 +438,7 @@ chmod +x "$BIN_DIR/healthcheck.sh"
 # 5. Quadlet-файлы
 CURRENT_UID=$(id -u "$CURRENT_USER")
 CURRENT_GID=$(id -g "$CURRENT_USER")
-# ← КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: heredoc читается через $(cat)
+# ← КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: heredoc читается через $(cat), не $2
 create_quadlet() {
     local file="$1"
     local content
@@ -543,6 +550,14 @@ mkdir -p "$USER_CONFIG/containers/systemd"
 for file in "$CONTAINERS_DIR"/*.container "$CONTAINERS_DIR"/*.timer; do
 [ -f "$file" ] && ln -sf "$file" "$USER_CONFIG/containers/systemd/$(basename "$file")" 2>/dev/null || true
 done
+# ← Проверка регистрации Quadlet-файлов
+if ! systemctl --user list-unit-files 2>/dev/null | grep -q "gitea.service"; then
+print_warning "Quadlet-файлы не зарегистрированы — пробуем вручную"
+for f in "$CONTAINERS_DIR"/*.container "$CONTAINERS_DIR"/*.timer; do
+[ -f "$f" ] && ln -sf "$f" "$USER_CONFIG/containers/systemd/" 2>/dev/null || true
+done
+systemctl --user daemon-reload 2>/dev/null || true
+fi
 systemctl --user daemon-reexec 2>/dev/null || true
 systemctl --user daemon-reload 2>/dev/null || true
 # Запуск контейнеров
