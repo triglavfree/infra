@@ -1,11 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 # ============================================================================
-# infra.sh — автономный развёртыватель инфраструктуры (v4.1.1)
+# infra.sh — автономный развёртыватель инфраструктуры (v4.1.1-fix)
 # ============================================================================
-# Исправления v4.1.1:
+# Исправления:
 #   • create_quadlet: heredoc читается через $(cat), не $2
 #   • bootstrap.sh: подключает common.sh для print_* функций
+#   • SSH: авто-определение ssh.service (Ubuntu) / sshd.service (RHEL)
 #   • Telegram API URL: убраны пробелы в healthcheck.sh
 #   • RESTIC_REPOSITORY: убраны trailing spaces
 #   • Gitea runner: проверка пустого токена
@@ -114,11 +115,14 @@ if [ -f "$REAL_HOME/.ssh/authorized_keys" ] && grep -qE '^(ssh-rsa|ssh-ed25519)'
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null || true
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
-if sshd -t && (systemctl reload sshd 2>/dev/null || systemctl restart sshd) && sleep 2 && systemctl is-active --quiet sshd; then
+# ← ИСПРАВЛЕНИЕ: авто-определение имени SSH-сервиса
+SSH_SERVICE="ssh"
+systemctl list-unit-files 2>/dev/null | grep -q sshd.service && SSH_SERVICE="sshd"
+if sshd -t 2>/dev/null && (systemctl reload "$SSH_SERVICE" 2>/dev/null || systemctl restart "$SSH_SERVICE") && sleep 2 && systemctl is-active --quiet "$SSH_SERVICE" 2>/dev/null; then
 print_success "Пароли в SSH отключены"
 else
 cp /etc/ssh/sshd_config.backup /etc/ssh/sshd_config 2>/dev/null
-systemctl restart sshd
+systemctl restart "$SSH_SERVICE" 2>/dev/null || true
 print_warning "SSH не запустился — конфигурация восстановлена"
 fi
 else
@@ -195,7 +199,6 @@ ufw allow 9999 comment "Dozzle" >/dev/null 2>&1
 ufw --force enable >/dev/null 2>&1 || true
 print_success "Брандмауэр настроен"
 print_step "WireGuard: генерация ключей"
-# Авто-определение основного сетевого интерфейса
 WG_INTERFACE=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1)
 WG_INTERFACE="${WG_INTERFACE:-eth0}"
 if [ ! -f "/etc/wireguard/private.key" ]; then
@@ -371,12 +374,10 @@ echo "  logs <svc> — логи сервиса"
 esac
 CLIEOF
 chmod +x "$BIN_DIR/infra"
-# 4. Health-check скрипт (исправлен Telegram URL)
+# 4. Health-check скрипт
 cat > "$BIN_DIR/healthcheck.sh" <<'HCEOF'
 #!/bin/bash
 set -euo pipefail
-# Минималистичный health-check с уведомлениями
-# Запускать через cron: */5 * * * * $HOME/infra/bin/healthcheck.sh
 INFRA_DIR="$HOME/infra"
 LOG_FILE="$INFRA_DIR/logs/healthcheck.log"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
@@ -427,10 +428,10 @@ done
 log "=== Health-check completed ==="
 HCEOF
 chmod +x "$BIN_DIR/healthcheck.sh"
-# 5. Quadlet-файлы с label авто-обновления
+# 5. Quadlet-файлы
 CURRENT_UID=$(id -u "$CURRENT_USER")
 CURRENT_GID=$(id -g "$CURRENT_USER")
-# ← КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: heredoc читается через $(cat), не $2
+# ← КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: heredoc читается через $(cat)
 create_quadlet() {
     local file="$1"
     local content
@@ -492,7 +493,6 @@ PublishPort=9999:8080
 [Service]
 Restart=always
 EOF
-# =============== ADGUARD HOME ===============
 create_quadlet "$CONTAINERS_DIR/adguardhome.container" <<EOF
 [Container]
 Image=docker.io/adguard/adguardhome:latest
@@ -506,7 +506,6 @@ Restart=always
 User=root
 Capability=CAP_NET_BIND_SERVICE
 EOF
-# =============== RESTIC (ОБЛАЧНЫЙ БЭКАП) — без авто-обновления ===============
 cat > "$CONTAINERS_DIR/restic.container" <<EOF
 [Container]
 Image=docker.io/restic/restic:latest
@@ -546,7 +545,7 @@ for file in "$CONTAINERS_DIR"/*.container "$CONTAINERS_DIR"/*.timer; do
 done
 systemctl --user daemon-reexec 2>/dev/null || true
 systemctl --user daemon-reload 2>/dev/null || true
-# Запуск контейнеров (кроме restic)
+# Запуск контейнеров
 if ! $RESTORE_MODE; then
 print_step "Запуск сервисов"
 for svc in gitea vaultwarden torrserver caddy dozzle adguardhome; do
@@ -574,7 +573,6 @@ ${SOFT_BLUE}👉 После создания — нажмите Enter${RESET}
 ${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
 EOF
 read -p "Нажмите Enter после настройки админа... "
-# Настройка раннера
 cat <<EOF
 ${SOFT_BLUE}👉 Получите токен раннера в Gitea:${RESET}
 ${LIGHT_GRAY}  http://$LOCAL_IP:3000/admin/runners → Add Runner${RESET}
@@ -608,7 +606,6 @@ print_success "Раннер зарегистрирован" || true
 else
 print_info "Настройка раннера пропущена (пустой токен)"
 fi
-# Настройка cron для healthcheck
 print_step "Настройка health-check (cron)"
 if command -v crontab >/dev/null 2>&1; then
 (crontab -l 2>/dev/null || true; echo "*/5 * * * * $CURRENT_HOME/infra/bin/healthcheck.sh") | crontab -
