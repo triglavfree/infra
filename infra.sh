@@ -14,7 +14,7 @@ set -euo pipefail
 #   • WireGuard: авто-определение сетевого интерфейса с улучшениями для Ubuntu 24.04
 #   • Healthcheck: добавлена проверка Caddy
 #   • Restic: добавлен --one-file-system для безопасности
-#   • Совместимость с Ubuntu 24.04.4 LTS: обновлены пути, пакеты и проверки
+#   • Исправление ошибки: удален fstrim из списка устанавливаемых пакетов (util-linux уже входит в состав системы)
 # ============================================================================
 
 # =============== ЦВЕТОВАЯ СХЕМА ===============
@@ -211,8 +211,8 @@ apt-get clean >/dev/null 2>&1 || true
 print_success "Система обновлена"
 
 print_step "Установка пакетов"
-# ← ИСПРАВЛЕНИЕ: обновленный список пакетов с учетом Ubuntu 24.04
-PKGS=("podman" "podman-docker" "ufw" "fail2ban" "fstrim" "gpg" "wireguard-tools")
+# ← ИСПРАВЛЕНИЕ: удален fstrim из списка устанавливаемых пакетов (util-linux уже входит в состав системы)
+PKGS=("podman" "podman-docker" "ufw" "fail2ban" "gpg" "wireguard-tools")
 
 for pkg in "${PKGS[@]}"; do
     print_substep "Проверка: $pkg"
@@ -265,6 +265,8 @@ fi
 print_success "Swap настроен (${SWAP_SIZE}M)"
 
 print_step "Диск"
+# ← fstrim теперь входит в состав util-linux, который уже установлен по умолчанию
+# Вместо установки пакета fstrim, просто включаем таймер fstrim
 systemctl enable --now fstrim.timer 2>/dev/null || true
 print_success "TRIM включён"
 
