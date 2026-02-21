@@ -1,13 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 # ============================================================================
-# infra.sh — автономный развёртыватель инфраструктуры (v4.1.1-fix)
+# infra.sh — автономный развёртыватель инфраструктуры (v4.1.2-quadlet-fix)
 # ============================================================================
-# Исправления v4.1.1-fix:
-#   • create_quadlet: heredoc читается через $(cat), не $2
+# Исправления v4.1.2:
+#   • create_quadlet: безопасная запись .container без строковой магии
 #   • bootstrap.sh: подключает common.sh для print_* функций
 #   • SSH: авто-определение ssh.service (Ubuntu) / sshd.service (RHEL)
-#   • linger: проверка и включение для systemd --user
+#   • Quadlet: Label=io.containers.autoupdate=image в [Container] блоках
 #   • Telegram API URL: убраны пробелы в healthcheck.sh
 #   • RESTIC_REPOSITORY: убраны trailing spaces
 #   • Gitea runner: проверка пустого токена
@@ -75,12 +75,6 @@ for dir in "$INFRA_DIR" "$VOLUMES_DIR" "$SECRETS_DIR" "$BOOTSTRAP_DIR" "$BIN_DIR
 install -d -m 755 -o "$CURRENT_USER" -g "$CURRENT_USER" "$dir" 2>/dev/null || mkdir -p "$dir"
 done
 chmod 700 "$SECRETS_DIR"
-# =============== ПРОВЕРКА LINGER ===============
-if ! loginctl show-user "$CURRENT_USER" 2>/dev/null | grep -q "Linger=yes"; then
-print_substep "Включение linger для $CURRENT_USER"
-sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || \
-print_warning "Не удалось включить linger — сервисы могут не запуститься"
-fi
 # =============== ГЕНЕРАЦИЯ ФАЙЛОВ ===============
 # 1. Общие функции
 cat > "$BOOTSTRAP_DIR/common.sh" <<'EOF'
@@ -435,24 +429,19 @@ done
 log "=== Health-check completed ==="
 HCEOF
 chmod +x "$BIN_DIR/healthcheck.sh"
-# 5. Quadlet-файлы
+# 5. Quadlet-файлы — БЕЗОПАСНАЯ ЗАПИСЬ (v4.1.2-fix)
 CURRENT_UID=$(id -u "$CURRENT_USER")
 CURRENT_GID=$(id -g "$CURRENT_USER")
-# ← КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: heredoc читается через $(cat), не $2
+# ← ИСПРАВЛЕНИЕ: просто записываем heredoc, без строковой магии
 create_quadlet() {
     local file="$1"
-    local content
-    content=$(cat)
-    if ! echo "$content" | grep -q "io.containers.autoupdate"; then
-        content="${content%]*}"
-        content="${content}Label=io.containers.autoupdate=image
-]"
-    fi
-    echo "$content" > "$file"
+    cat > "$file"
 }
-create_quadlet "$CONTAINERS_DIR/gitea.container" <<EOF
+# Gitea
+cat > "$CONTAINERS_DIR/gitea.container" <<EOF
 [Container]
 Image=docker.io/gitea/gitea:1.22-rootless
+Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/gitea:/data
 PublishPort=3000:3000
 PublishPort=2222:22
@@ -466,25 +455,31 @@ Environment=GITEA__actions__ENABLED=true
 [Service]
 Restart=always
 EOF
-create_quadlet "$CONTAINERS_DIR/vaultwarden.container" <<EOF
+# Vaultwarden
+cat > "$CONTAINERS_DIR/vaultwarden.container" <<EOF
 [Container]
 Image=docker.io/vaultwarden/server:1.31-alpine
+Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/vaultwarden:/data
 PublishPort=8081:80
 [Service]
 Restart=always
 EOF
-create_quadlet "$CONTAINERS_DIR/torrserver.container" <<EOF
+# TorrServer
+cat > "$CONTAINERS_DIR/torrserver.container" <<EOF
 [Container]
 Image=ghcr.io/yourok/torrserver:latest
+Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z
 PublishPort=8090:8090
 [Service]
 Restart=always
 EOF
-create_quadlet "$CONTAINERS_DIR/caddy.container" <<EOF
+# Caddy
+cat > "$CONTAINERS_DIR/caddy.container" <<EOF
 [Container]
 Image=docker.io/library/caddy:2.8-alpine
+Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/caddy:/data
 Volume=$CURRENT_HOME/infra/volumes/caddy_config:/config
 PublishPort=80:80
@@ -492,17 +487,21 @@ PublishPort=443:443
 [Service]
 Restart=always
 EOF
-create_quadlet "$CONTAINERS_DIR/dozzle.container" <<EOF
+# Dozzle
+cat > "$CONTAINERS_DIR/dozzle.container" <<EOF
 [Container]
 Image=docker.io/amir20/dozzle:latest
+Label=io.containers.autoupdate=image
 Volume=/run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:ro
 PublishPort=9999:8080
 [Service]
 Restart=always
 EOF
-create_quadlet "$CONTAINERS_DIR/adguardhome.container" <<EOF
+# AdGuard Home
+cat > "$CONTAINERS_DIR/adguardhome.container" <<EOF
 [Container]
 Image=docker.io/adguard/adguardhome:latest
+Label=io.containers.autoupdate=image
 Volume=$CURRENT_HOME/infra/volumes/adguardhome/work:/opt/adguardhome/work
 Volume=$CURRENT_HOME/infra/volumes/adguardhome/conf:/opt/adguardhome/conf
 PublishPort=53:53/udp
@@ -513,6 +512,7 @@ Restart=always
 User=root
 Capability=CAP_NET_BIND_SERVICE
 EOF
+# Restic (без авто-обновления)
 cat > "$CONTAINERS_DIR/restic.container" <<EOF
 [Container]
 Image=docker.io/restic/restic:latest
@@ -599,6 +599,7 @@ if [ -n "${RUNNER_TOKEN:-}" ]; then
 cat > "$CONTAINERS_DIR/gitea-runner.container" <<EOF
 [Container]
 Image=docker.io/gitea/act_runner:0.3.0-dind-rootless
+Label=io.containers.autoupdate=registry
 Volume=$CURRENT_HOME/infra/volumes/gitea-runner:/data
 Volume=/run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:ro
 Environment=GITEA_INSTANCE_URL=http://host.containers.internal:3000
@@ -606,7 +607,6 @@ Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
 Environment=GITEA_RUNNER_NAME=$(hostname)-infra-runner
 Environment=GITEA_RUNNER_LABELS=infra,linux,amd64
 Environment=DOCKER_HOST=unix:///var/run/docker.sock
-Label=io.containers.autoupdate=registry
 [Service]
 Restart=always
 EOF
