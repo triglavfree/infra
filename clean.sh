@@ -2,9 +2,10 @@
 set -euo pipefail
 
 # =============================================================================
-# INFRASTRUCTURE CLEANUP v1.0
+# INFRASTRUCTURE CLEANUP v1.1
 # =============================================================================
 # Полная очистка без переустановки Ubuntu Server 24.04
+# Включает удаление самого скрипта cleanup по завершении
 # =============================================================================
 
 NEON_RED='\033[38;5;203m'
@@ -15,6 +16,9 @@ SOFT_WHITE='\033[38;5;252m'
 MUTED_GRAY='\033[38;5;245m'
 BOLD='\033[1m'
 RESET='\033[0m'
+
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_NAME="$(basename "$0")"
 
 print_header() {
     echo ""
@@ -33,7 +37,7 @@ CURRENT_UID=$(id -u "$CURRENT_USER")
 
 echo ""
 echo -e "${NEON_RED}${BOLD}╔════════════════════════════════════════════════╗${RESET}"
-echo -e "${NEON_RED}${BOLD}║     INFRASTRUCTURE CLEANUP v1.0                ║${RESET}"
+echo -e "${NEON_RED}${BOLD}║     INFRASTRUCTURE CLEANUP v1.1                ║${RESET}"
 echo -e "${NEON_RED}${BOLD}╚════════════════════════════════════════════════╝${RESET}"
 echo ""
 
@@ -49,6 +53,7 @@ echo -e "  • CLI утилиту 'infra' и alias 'i'"
 echo -e "  • Restic репозиторий и пароли"
 echo -e "  • UFW правила (будут сброшены)"
 echo -e "  • Настройки sysctl и модули ядра"
+echo -e "  • ${NEON_RED}Сам этот скрипт ($SCRIPT_NAME)${RESET}"
 echo ""
 echo -e "${NEON_YELLOW}⚠ СОХРАНЯТСЯ:${RESET}"
 echo -e "  • Установленные пакеты (podman, ufw и т.д.)"
@@ -191,6 +196,12 @@ rm -rf /tmp/infra-* 2>/dev/null || true
 sudo rm -rf /run/user/$CURRENT_UID/netbird 2>/dev/null || true
 print_success "Временные файлы удалены"
 
+# =============== 11. УДАЛЕНИЕ СКРИПТА ===============
+print_header "11. Самоудаление скрипта"
+
+print_step "Удаление $SCRIPT_NAME..."
+print_success "Скрипт будет удалён после завершения"
+
 # =============== ИТОГ ===============
 echo ""
 echo -e "${NEON_GREEN}${BOLD}╔════════════════════════════════════════════════╗${RESET}"
@@ -207,6 +218,7 @@ echo -e "  ${NEON_GREEN}✓${RESET} Cron задачи"
 echo -e "  ${NEON_GREEN}✓${RESET} CLI утилита 'infra'"
 echo -e "  ${NEON_GREEN}✓${RESET} Restic репозиторий и бэкапы"
 echo -e "  ${NEON_GREEN}✓${RESET} UFW правила"
+echo -e "  ${NEON_GREEN}✓${RESET} Сам скрипт cleanup"
 echo ""
 
 echo -e "${NEON_YELLOW}⚠ Что осталось (не тронуто):${RESET}"
@@ -223,3 +235,6 @@ echo ""
 
 echo -e "${NEON_CYAN}Теперь можно заново запустить скрипт установки.${RESET}"
 echo ""
+
+# Самоудаление скрипта
+rm -f "$SCRIPT_PATH"
