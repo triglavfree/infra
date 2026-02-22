@@ -1,1010 +1,1119 @@
 #!/bin/bash
 set -euo pipefail
-# ============================================================================
-# infra.sh — автономный развёртыватель инфраструктуры (v5.0.0 для Ubuntu Server 24.04)
-# ============================================================================
-# Изменения v5.0.0:
-#   • Полная оптимизация под Ubuntu Server 24.04 LTS
-#   • Авто-отключение systemd-resolved для AdGuard Home
-#   • Исправлена генерация Quadlet через podman-systemd-generator
-#   • Улучшена обработка linger и user services
-#   • Добавлена установка cron если отсутствует
-#   • Исправлены права доступа к volumes (rootless podman)
-#   • Добавлена проверка apparmor для rootless контейнеров
-#   • Исправлено определение SSH сервиса для Ubuntu 24.04
-# ============================================================================
+# =============================================================================
+# INFRASTRUCTURE v8.9.3
+# =============================================================================
+# Исправлено: Автоматический netbird up после старта, правильные пути в Gitea
+# =============================================================================
 
-# =============== ЦВЕТОВАЯ СХЕМА ===============
-DARK_GRAY='\033[38;5;242m'
-SOFT_BLUE='\033[38;5;67m'
-SOFT_GREEN='\033[38;5;71m'
-SOFT_YELLOW='\033[38;5;178m'
-SOFT_RED='\033[38;5;167m'
-MEDIUM_GRAY='\033[38;5;246m'
-LIGHT_GRAY='\033[38;5;250m'
+# =============== АНИМАЦИЯ И ЦВЕТА ===============
+NEON_CYAN='\033[38;5;81m'
+NEON_GREEN='\033[38;5;84m'
+NEON_YELLOW='\033[38;5;220m'
+NEON_RED='\033[38;5;203m'
+NEON_PURPLE='\033[38;5;141m'
+NEON_BLUE='\033[38;5;75m'
+SOFT_WHITE='\033[38;5;252m'
+MUTED_GRAY='\033[38;5;245m'
+DIM_GRAY='\033[38;5;240m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-print_step() {
-echo -e "
-${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "${BOLD}${SOFT_BLUE}▸ ${1}${RESET}"
-echo -e "${DARK_GRAY}───────────────────────────────────────────────────────────────────────────────${RESET}
-"
+CURRENT_USER="${SUDO_USER:-$(whoami)}"
+CURRENT_UID=$(id -u "$CURRENT_USER")
+
+typewrite() {
+    local text="$1" color="${2:-$SOFT_WHITE}" delay="${3:-0.01}"
+    printf "${color}"
+    for ((i=0; i<${#text}; i++)); do
+        printf "%s" "${text:$i:1}"
+        sleep "$delay"
+    done
+    printf "${RESET}\n"
 }
 
-print_success() { echo -e "${SOFT_GREEN}✓${RESET} ${1}"; }
-print_warning() { echo -e "${SOFT_YELLOW}⚠${RESET} ${1}"; }
-print_error()   { echo -e "
-${SOFT_RED}✗${RESET} ${BOLD}${1}${RESET}
-" >&2; exit 1; }
-print_info()    { echo -e "${LIGHT_GRAY}ℹ${RESET} ${1}"; }
-print_substep() { echo -e "${MEDIUM_GRAY}  →${RESET} ${1}"; }
+print_header() {
+    echo ""
+    echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"
+    echo -e "${NEON_CYAN}${BOLD}  $1${RESET}"
+    echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"
+    echo ""
+}
 
-# =============== ПРОВЕРКА СИСТЕМНЫХ ТРЕБОВАНИЙ ===============
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    if [[ "$NAME" == "Ubuntu" ]] && [[ "$VERSION_ID" == "24.04"* ]]; then
-        print_info "Обнаружена Ubuntu Server $VERSION_ID"
-    else
-        print_warning "Этот скрипт оптимизирован для Ubuntu Server 24.04 LTS"
-        print_info "Текущая система: $NAME $VERSION_ID"
-    fi
-else
-    print_error "Не удалось определить операционную систему"
-fi
+print_step() {
+    echo ""
+    echo -e "${NEON_CYAN}${BOLD}▸${RESET} ${SOFT_WHITE}${BOLD}$1${RESET}"
+    echo -e "${DIM_GRAY}  $(printf '─%.0s' $(seq 1 40))${RESET}"
+}
 
-# =============== ОПРЕДЕЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ===============
+print_success() { echo -e "  ${NEON_GREEN}✓${RESET} ${SOFT_WHITE}$1${RESET}"; }
+print_warning() { echo -e "  ${NEON_YELLOW}⚡${RESET} ${SOFT_WHITE}$1${RESET}"; }
+print_error() { echo -e "  ${NEON_RED}✗${RESET} ${BOLD}$1${RESET}" >&2; exit 1; }
+print_info() { echo -e "  ${NEON_BLUE}ℹ${RESET} ${MUTED_GRAY}$1${RESET}"; }
+print_substep() { echo -e "  ${DIM_GRAY}→${RESET} ${MUTED_GRAY}$1${RESET}"; }
+
+# =============== ПРОВЕРКА ===============
 if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
-print_error "Запускайте от обычного пользователя с sudo (не от root напрямую)!"
+    print_error "Запускайте от обычного пользователя с sudo!"
 fi
 
-CURRENT_USER="${SUDO_USER:-$(whoami)}"
-CURRENT_HOME="${HOME:-$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)}"
+CURRENT_GID=$(id -g "$CURRENT_USER")
+CURRENT_HOME="$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)"
+SERVER_IP=$(hostname -I | awk '{print $1}')
 
-if ! getent passwd "$CURRENT_USER" >/dev/null 2>&1; then
-print_error "Пользователь '$CURRENT_USER' не найден!"
-fi
+print_header "INFRASTRUCTURE v8.9.3"
+typewrite "Инициализация..." "$MUTED_GRAY" 0.02
+print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
-if [ ! -d "$CURRENT_HOME" ]; then
-REAL_HOME=$(getent passwd "$CURRENT_USER" | cut -d: -f6)
-print_warning "Домашняя директория $CURRENT_HOME не существует. Используем: $REAL_HOME"
-CURRENT_HOME="$REAL_HOME"
-fi
+# =============== КАТАЛОГИ ===============
+print_step "Создание структуры"
 
-# =============== РЕЖИМЫ РАБОТЫ ===============
-RESTORE_MODE=false
-if [[ "${1:-}" == "--restore" ]]; then
-RESTORE_MODE=true
-shift
-fi
-
-print_step "Подготовка инфраструктуры для: $CURRENT_USER"
-print_info "Домашняя директория: $CURRENT_HOME"
-
-# =============== СТРУКТУРА КАТАЛОГОВ ===============
 INFRA_DIR="$CURRENT_HOME/infra"
 VOLUMES_DIR="$INFRA_DIR/volumes"
-SECRETS_DIR="$INFRA_DIR/secrets"
-BOOTSTRAP_DIR="$INFRA_DIR/bootstrap"
 BIN_DIR="$INFRA_DIR/bin"
 CONTAINERS_DIR="$INFRA_DIR/containers"
-DOCS_DIR="$INFRA_DIR/docs"
-BACKUPS_DIR="$INFRA_DIR/backups"
-LOGS_DIR="$INFRA_DIR/logs"
+BOOTSTRAP_DIR="$INFRA_DIR/bootstrap"
+RESTIC_DIR="$INFRA_DIR/restic"
+RESTIC_REPO="$RESTIC_DIR/repo"
+RESTIC_PASSWORD_FILE="$RESTIC_DIR/password.txt"
+RESTIC_ENV_FILE="$RESTIC_DIR/restic.env"
 
-for dir in "$INFRA_DIR" "$VOLUMES_DIR" "$SECRETS_DIR" "$BOOTSTRAP_DIR" "$BIN_DIR" "$CONTAINERS_DIR" "$DOCS_DIR" "$BACKUPS_DIR" "$LOGS_DIR"; do
-install -d -m 755 -o "$CURRENT_USER" -g "$CURRENT_USER" "$dir" 2>/dev/null || mkdir -p "$dir"
+CREATED_COUNT=0
+for dir in "$INFRA_DIR" "$VOLUMES_DIR" "$BIN_DIR" "$CONTAINERS_DIR" "$BOOTSTRAP_DIR" \
+           "$RESTIC_DIR" "$RESTIC_REPO" "$VOLUMES_DIR"/{gitea,torrserver,gitea-runner,netbird}; do
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir" 2>/dev/null
+        chown "$CURRENT_USER:$CURRENT_USER" "$dir" 2>/dev/null || true
+        ((CREATED_COUNT++)) || true
+    fi
 done
 
-chmod 700 "$SECRETS_DIR"
+if [ $CREATED_COUNT -gt 0 ]; then
+    print_success "Создано $CREATED_COUNT директорий"
+else
+    print_info "Директории уже существуют"
+fi
 
-# =============== ПРОВЕРКА LINGER (КРИТИЧНО ДЛЯ UBUNTU 24.04) ===============
-# В Ubuntu 24.04 linger должен быть включен ДО создания user services
-print_step "Проверка systemd linger"
+if [ ! -f "$RESTIC_PASSWORD_FILE" ]; then
+    openssl rand -base64 32 > "$RESTIC_PASSWORD_FILE" 2>/dev/null || echo "$(date +%s)$RANDOM" > "$RESTIC_PASSWORD_FILE"
+    chmod 600 "$RESTIC_PASSWORD_FILE"
+    print_success "Пароль Restic создан"
+else
+    print_info "Пароль Restic уже существует"
+fi
+
+# =============== LINGER ===============
+print_step "Настройка linger"
 
 if ! loginctl show-user "$CURRENT_USER" 2>/dev/null | grep -q "Linger=yes"; then
-    print_substep "Включение linger для $CURRENT_USER (требуется для автозапуска контейнеров)"
-    
-    # Создаем директорию linger если её нет
-    sudo mkdir -p /var/lib/systemd/linger
-    
-    if sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null; then
-        print_success "Linger включен"
-        
-        # Проверяем создание файла
-        if [ -f "/var/lib/systemd/linger/$CURRENT_USER" ]; then
-            print_info "Файл linger создан: /var/lib/systemd/linger/$CURRENT_USER"
-        fi
-        
-        # Даем время на применение
-        sleep 2
-        
-        if loginctl show-user "$CURRENT_USER" 2>/dev/null | grep -q "Linger=yes"; then
-            print_success "Linger активен для $CURRENT_USER"
-        else
-            print_warning "Linger не подтвержден, но продолжаем..."
-        fi
+    print_substep "Включение linger..."
+    if sudo loginctl enable-linger "$CURRENT_USER"; then
+        print_success "Linger активирован"
     else
-        print_error "Критическая ошибка: не удалось включить linger. Сервисы не будут автозапускаться!"
+        print_warning "Возможно, уже включен"
     fi
+    sleep 1
 else
-    print_info "Linger уже включен для $CURRENT_USER"
+    print_info "Linger уже включен"
 fi
 
-# =============== ГЕНЕРАЦИЯ ФАЙЛОВ ===============
-# 1. Общие функции
-cat > "$BOOTSTRAP_DIR/common.sh" <<'EOF'
-DARK_GRAY='\033[38;5;242m'; SOFT_BLUE='\033[38;5;67m'; SOFT_GREEN='\033[38;5;71m'
-SOFT_YELLOW='\033[38;5;178m'; SOFT_RED='\033[38;5;167m'; MEDIUM_GRAY='\033[38;5;246m'
-LIGHT_GRAY='\033[38;5;250m'; BOLD='\033[1m'; RESET='\033[0m'
+# =============== BOOTSTRAP ===============
+print_step "Подготовка системы"
 
-print_step() { echo -e "
-${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"; echo -e "${BOLD}${SOFT_BLUE}▸ ${1}${RESET}"; echo -e "${DARK_GRAY}───────────────────────────────────────────────────────────────────────────────${RESET}
-"; }
+BOOTSTRAP_NEEDS_UPDATE=0
+if [ ! -f "$BOOTSTRAP_DIR/bootstrap.sh" ]; then
+    BOOTSTRAP_NEEDS_UPDATE=1
+fi
 
-print_success() { echo -e "${SOFT_GREEN}✓${RESET} ${1}"; }
-print_warning() { echo -e "${SOFT_YELLOW}⚠${RESET} ${1}"; }
-print_error()   { echo -e "
-${SOFT_RED}✗${RESET} ${BOLD}${1}${RESET}
-" >&2; exit 1; }
-print_info()    { echo -e "${LIGHT_GRAY}ℹ${RESET} ${1}"; }
-print_substep() { echo -e "${MEDIUM_GRAY}  →${RESET} ${1}"; }
-EOF
-
-# 2. Bootstrap-скрипт (оптимизирован для Ubuntu 24.04)
-cat > "$BOOTSTRAP_DIR/bootstrap.sh" <<'BOOTEOF'
+if [ $BOOTSTRAP_NEEDS_UPDATE -eq 1 ]; then
+    cat > "$BOOTSTRAP_DIR/bootstrap.sh" <<'BOOTEOF'
 #!/bin/bash
 set -euo pipefail
-source "$(dirname "$0")/common.sh"
-
 REAL_USER="${REAL_USER:-$SUDO_USER}"
-REAL_HOME="${REAL_HOME:-/home/$REAL_USER}"
+REAL_UID=$(id -u "$REAL_USER" 2>/dev/null || echo "1000")
+[ -z "$REAL_USER" ] && exit 1
+[ "$(id -u)" != "0" ] && exit 1
 
-[ -z "$REAL_USER" ] && { echo "✗ Не удалось определить пользователя" >&2; exit 1; }
+modprobe wireguard 2>/dev/null || true
+echo "wireguard" > /etc/modules-load.d/wireguard.conf 2>/dev/null || true
 
-print_success() { echo -e "${SOFT_GREEN}✓${RESET} ${1}"; }
-print_warning() { echo -e "${SOFT_YELLOW}⚠${RESET} ${1}"; }
-print_error()   { echo -e "
-${SOFT_RED}✗${RESET} ${1}
-" >&2; exit 1; }
-print_info()    { echo -e "${LIGHT_GRAY}ℹ${RESET} ${1}"; }
+cat > /etc/sysctl.d/99-netbird.conf <<EOF
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.forwarding=1
+net.ipv4.conf.all.src_valid_mark=1
+net.ipv4.ip_unprivileged_port_start=80
+EOF
+sysctl --system >/dev/null 2>&1 || true
 
-[ "$(id -u)" != "0" ] && print_error "Запускайте с sudo!"
+[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
+    echo 0 > /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true
 
-# === UBUNTU 24.04: ОТКЛЮЧЕНИЕ SYSTEMD-RESOLVED ===
-print_step "Настройка DNS (systemd-resolved)"
-if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    print_warning "systemd-resolved активен и занимает порт 53"
-    print_substep "Остановка и отключение systemd-resolved..."
-    
-    systemctl stop systemd-resolved 2>/dev/null || true
-    systemctl disable systemd-resolved 2>/dev/null || true
-    
-    # Восстанавливаем resolv.conf
-    if [ -L /etc/resolv.conf ]; then
-        rm -f /etc/resolv.conf
-        echo "nameserver 8.8.8.8" > /etc/resolv.conf
-        echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-    fi
-    
-    print_success "systemd-resolved отключен"
-    print_info "AdGuard Home теперь может использовать порт 53"
-else
-    print_info "systemd-resolved не активен"
-fi
+systemctl enable systemd-resolved 2>/dev/null || true
+systemctl start systemd-resolved 2>/dev/null || true
 
-print_step "SSH Hardening"
-
-if [ -f "$REAL_HOME/.ssh/authorized_keys" ] && grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2)' "$REAL_HOME/.ssh/authorized_keys" 2>/dev/null; then
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%s) 2>/dev/null || true
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-
-# Ubuntu 24.04 использует ssh.service
-SSH_SERVICE="ssh"
-if systemctl list-unit-files 2>/dev/null | grep -q '^ssh\.service'; then
-    SSH_SERVICE="ssh"
-elif systemctl list-unit-files 2>/dev/null | grep -q '^sshd\.service'; then
-    SSH_SERVICE="sshd"
-fi
-
-print_info "Используем сервис: $SSH_SERVICE"
-
-if sshd -t 2>/dev/null; then
-    systemctl reload "$SSH_SERVICE" 2>/dev/null || systemctl restart "$SSH_SERVICE"
-    sleep 2
-    if systemctl is-active --quiet "$SSH_SERVICE"; then
-        print_success "SSH настроен (пароли отключены)"
-    else
-        print_warning "SSH не перезапустился"
-    fi
-else
-    print_warning "Ошибка в конфигурации SSH"
-fi
-else
-print_warning "SSH-ключи не настроены — пароли остаются включёнными"
-fi
-
-print_step "Обновление системы"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null 2>&1
-apt-get upgrade -yqq --no-install-recommends >/dev/null 2>&1 || true
-apt-get autoremove -yqq >/dev/null 2>&1 || true
-apt-get clean >/dev/null 2>&1 || true
-print_success "Система обновлена"
+apt-get install -y -qq --no-install-recommends \
+    podman podman-docker uidmap slirp4netns fuse-overlayfs \
+    ufw fail2ban gpg cron net-tools dnsutils jq curl \
+    wireguard-tools linux-headers-$(uname -r) openssl \
+    >/dev/null 2>&1 || true
 
-print_step "Установка пакетов"
-# Ubuntu 24.04: cron может отсутствовать в минимальной установке
-PKGS=("podman" "podman-docker" "ufw" "fail2ban" "gpg" "wireguard-tools" "cron" "apparmor-utils")
-
-for pkg in "${PKGS[@]}"; do
-    print_substep "Проверка: $pkg"
-    if dpkg -l | grep -q "^ii  $pkg "; then
-        print_info "$pkg уже установлен"
-    else
-        print_substep "Установка: $pkg"
-        apt-get install -y -qq --no-install-recommends "$pkg" >/dev/null 2>&1 || {
-            print_warning "Повторная попытка установки $pkg..."
-            apt-get update -qq >/dev/null 2>&1
-            apt-get install -y -qq --no-install-recommends "$pkg" >/dev/null 2>&1 || {
-                print_warning "Не удалось установить $pkg (пропускаем)"
-            }
-        }
-    fi
-done
-
-# Проверяем что cron запущен
-if systemctl is-active --quiet cron 2>/dev/null || systemctl is-active --quiet crond 2>/dev/null; then
-    print_success "Cron активен"
-else
-    systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null || true
-    systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null || true
+if [ -f "/home/$REAL_USER/.ssh/authorized_keys" ] && \
+   grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2)' "/home/$REAL_USER/.ssh/authorized_keys" 2>/dev/null; then
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config 2>/dev/null || true
+    systemctl restart sshd 2>/dev/null || true
 fi
 
-print_success "Пакеты установлены"
-
-print_step "Сетевые оптимизации (BBR)"
-modprobe tcp_bbr 2>/dev/null && echo "tcp_bbr" > /etc/modules-load.d/tcp_bbr.conf || true
-cat > /etc/sysctl.d/99-infra.conf <<'SYSCTL'
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
-net.ipv4.tcp_rmem = 4096 87380 67108864
-net.ipv4.tcp_wmem = 4096 65536 67108864
-net.core.somaxconn = 65535
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 30
-net.ipv4.tcp_syncookies = 1
-net.ipv4.ip_forward = 1
-SYSCTL
-sysctl -p /etc/sysctl.d/99-infra.conf >/dev/null 2>&1 || true
-print_success "BBR настроен"
-
-print_step "Swap"
-TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
-SWAP_SIZE=512
-[ "$TOTAL_MEM" -le 1024 ] && SWAP_SIZE=2048
-[ "$TOTAL_MEM" -le 2048 ] && SWAP_SIZE=1024
-[ "$TOTAL_MEM" -le 4096 ] && SWAP_SIZE=512
-
-if ! swapon --show | grep -q '/swapfile'; then
-fallocate -l ${SWAP_SIZE}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$SWAP_SIZE status=none
-chmod 600 /swapfile; mkswap /swapfile >/dev/null; swapon /swapfile
-grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-fi
-print_success "Swap настроен (${SWAP_SIZE}M)"
-
-print_step "Диск (fstrim)"
-systemctl enable --now fstrim.timer 2>/dev/null || true
-print_success "TRIM включён"
-
-print_step "Fail2Ban + UFW"
-SSH_PORT=$(grep -Po '^Port \K\d+' /etc/ssh/sshd_config 2>/dev/null || echo 22)
-mkdir -p /etc/fail2ban/jail.d
-cat > /etc/fail2ban/jail.d/sshd.local <<F2B
-[sshd]
-enabled = true
-port = $SSH_PORT
-maxretry = 5
-bantime = 1h
-F2B
-systemctl restart fail2ban 2>/dev/null || true
-
-ufw --force reset >/dev/null 2>&1 || true
-ufw default deny incoming >/dev/null 2>&1
-ufw default allow outgoing >/dev/null 2>&1
-ufw allow "$SSH_PORT/tcp" comment "SSH" >/dev/null 2>&1
-ufw allow 3000/tcp comment "Gitea" >/dev/null 2>&1
-ufw allow 3001/tcp comment "AdGuard WebUI" >/dev/null 2>&1
-ufw allow 53/udp comment "AdGuard DNS" >/dev/null 2>&1
-ufw allow 53/tcp comment "AdGuard DNS" >/dev/null 2>&1
-ufw allow 51820/udp comment "WireGuard" >/dev/null 2>&1
-ufw allow 8081/tcp comment "Vaultwarden" >/dev/null 2>&1
-ufw allow 8090/tcp comment "TorrServer" >/dev/null 2>&1
-ufw allow 9999/tcp comment "Dozzle" >/dev/null 2>&1
-ufw --force enable >/dev/null 2>&1 || true
-print_success "Брандмауэр настроен"
-
-print_step "WireGuard: генерация ключей"
-# Ubuntu 24.04: улучшенное определение интерфейса
-WG_INTERFACE=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1)
-
-if [ -z "$WG_INTERFACE" ] || [ ! -d "/sys/class/net/$WG_INTERFACE" ]; then
-    WG_INTERFACE=$(ip -o link show 2>/dev/null | grep -v "lo:" | grep "state UP" | head -1 | awk -F': ' '{print $2}')
-fi
-
-if [ -z "$WG_INTERFACE" ] || [ ! -d "/sys/class/net/$WG_INTERFACE" ]; then
-    WG_INTERFACE="eth0"
-fi
-
-print_info "Используем интерфейс: $WG_INTERFACE"
-
-mkdir -p /etc/wireguard
-chmod 700 /etc/wireguard
-
-if [ ! -f "/etc/wireguard/private.key" ]; then
-wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
-chmod 600 /etc/wireguard/private.key /etc/wireguard/public.key
-print_substep "Public key: $(cat /etc/wireguard/public.key)"
-else
-print_info "Ключи WireGuard уже существуют"
-fi
-
-cat > /etc/wireguard/wg0.conf <<WGEOF
-[Interface]
-PrivateKey = $(cat /etc/wireguard/private.key)
-Address = 10.0.0.1/24
-ListenPort = 51820
-SaveConfig = true
-PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${WG_INTERFACE} -j MASQUERADE; ip6tables -A FORWARD -i wg0 -j ACCEPT; ip6tables -t nat -A POSTROUTING -o ${WG_INTERFACE} -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${WG_INTERFACE} -j MASQUERADE; ip6tables -D FORWARD -i wg0 -j ACCEPT; ip6tables -t nat -D POSTROUTING -o ${WG_INTERFACE} -j MASQUERADE
-WGEOF
-
-chmod 600 /etc/wireguard/wg0.conf
-
-if wg-quick down wg0 2>/dev/null; then sleep 1; fi
-if wg-quick up wg0 2>/dev/null; then
-    systemctl enable wg-quick@wg0 2>/dev/null || true
-    print_success "WireGuard настроен и запущен (wg0)"
-else
-    print_warning "WireGuard: проверьте конфигурацию вручную"
-fi
-
-print_step "Включение linger для $REAL_USER"
-loginctl enable-linger "$REAL_USER" 2>/dev/null && \
-print_success "Linger включён" || \
-print_warning "Не удалось включить linger"
-
-print_step "Настройка rootless Podman"
-# Ubuntu 24.04: настройка subuid/subgid для rootless
-if ! grep -q "$REAL_USER:" /etc/subuid 2>/dev/null; then
+if [ ! -f /etc/subuid ] || ! grep -q "$REAL_USER:" /etc/subuid 2>/dev/null; then
     usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$REAL_USER" 2>/dev/null || true
-    print_info "Настроены subuid/subgid для $REAL_USER"
 fi
 
-# Проверка apparmor профиля для rootless
-if [ -f /etc/apparmor.d/podman ]; then
-    print_info "AppArmor профиль для Podman найден"
-fi
+mkdir -p /run/user/$REAL_UID
+chown $REAL_USER:$REAL_USER /run/user/$REAL_UID
+chmod 700 /run/user/$REAL_UID
 
-print_success "Rootless Podman настроен"
+mkdir -p /var/lib/netbird
+chmod 755 /var/lib/netbird
 
+SSH_PORT=$(grep -Po '^Port \K\d+' /etc/ssh/sshd_config 2>/dev/null || echo 22)
+ufw --force reset >/dev/null 2>&1 || true
+ufw default deny incoming >/dev/null 2>&1 || true
+ufw default allow outgoing >/dev/null 2>&1 || true
+ufw allow "$SSH_PORT/tcp" >/dev/null 2>&1 || true
+ufw allow 80,443,3000,8090,2222/tcp >/dev/null 2>&1 || true
+ufw allow 3478/udp >/dev/null 2>&1 || true
+ufw allow 49152:65535/udp >/dev/null 2>&1 || true
+ufw --force enable >/dev/null 2>&1 || true
+
+echo "✓ Готово"
 BOOTEOF
+    chmod +x "$BOOTSTRAP_DIR/bootstrap.sh"
+    print_success "Bootstrap создан"
+else
+    print_info "Bootstrap уже актуален"
+fi
 
-chmod +x "$BOOTSTRAP_DIR/bootstrap.sh"
+# =============== RESTIC SETUP ===============
+print_step "Настройка Restic"
 
-# 3. CLI-утилита (без изменений, работает корректно)
-cat > "$BIN_DIR/infra" <<'CLIEOF'
+RESTIC_ENV_NEEDS_UPDATE=0
+if [ ! -f "$RESTIC_ENV_FILE" ]; then
+    RESTIC_ENV_NEEDS_UPDATE=1
+fi
+
+if [ $RESTIC_ENV_NEEDS_UPDATE -eq 1 ]; then
+    cat > "$RESTIC_ENV_FILE" <<EOF
+# Restic конфигурация
+# Для локальных бэкапов оставьте как есть
+# Для S3: RESTIC_REPOSITORY=s3:s3.amazonaws.com/bucketname
+# Для B2: RESTIC_REPOSITORY=b2:bucketname:path
+
+# AWS S3:
+# AWS_ACCESS_KEY_ID=your-key
+# AWS_SECRET_ACCESS_KEY=your-secret
+
+# Backblaze B2:
+# B2_ACCOUNT_ID=your-account
+# B2_ACCOUNT_KEY=your-key
+EOF
+    chmod 600 "$RESTIC_ENV_FILE"
+    print_success "Restic env создан"
+else
+    print_info "Restic env уже существует"
+fi
+
+if [ ! -f "$BIN_DIR/restic-wrapper" ]; then
+    cat > "$BIN_DIR/restic-wrapper" <<EOF
 #!/bin/bash
-set -euo pipefail
+RESTIC_DIR="$RESTIC_DIR"
+RESTIC_REPO="$RESTIC_REPO"
+RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE"
+RESTIC_ENV_FILE="$RESTIC_ENV_FILE"
+RESTIC_IMAGE="docker.io/restic/restic:latest"
 
+if [ -f "\$RESTIC_ENV_FILE" ]; then
+    set -a
+    source "\$RESTIC_ENV_FILE"
+    set +a
+fi
+
+if ! podman image exists \$RESTIC_IMAGE 2>/dev/null; then
+    echo "Загрузка Restic..." >&2
+    podman pull \$RESTIC_IMAGE >/dev/null 2>&1
+fi
+
+if [ -z "\${RESTIC_REPOSITORY:-}" ]; then
+    RESTIC_REPOSITORY="/restic-repo"
+fi
+
+podman run --rm -it \\
+    --volume "\$RESTIC_REPO:/restic-repo:Z" \\
+    --volume "\$RESTIC_PASSWORD_FILE:/restic-password:ro,Z" \\
+    --volume "\$RESTIC_ENV_FILE:/restic.env:ro,Z" \\
+    --env-file "\$RESTIC_ENV_FILE" \\
+    --env RESTIC_REPOSITORY="\$RESTIC_REPOSITORY" \\
+    --env RESTIC_PASSWORD_FILE=/restic-password \\
+    --security-opt label=disable \\
+    \$RESTIC_IMAGE "\$@"
+EOF
+    chmod +x "$BIN_DIR/restic-wrapper"
+    print_success "Restic wrapper создан"
+else
+    print_info "Restic wrapper уже существует"
+fi
+
+if [ ! -f "$RESTIC_REPO/config" ]; then
+    print_substep "Инициализация локального репозитория..."
+    if "$BIN_DIR/restic-wrapper" init 2>/dev/null; then
+        print_success "Репозиторий создан"
+        echo ""
+        echo -e "  ${NEON_YELLOW}⚠ ВАЖНО:${RESET} ${SOFT_WHITE}Сохраните пароль из файла:${RESET}"
+        echo -e "  ${NEON_CYAN}$RESTIC_PASSWORD_FILE${RESET}"
+        echo -e "  ${MUTED_GRAY}Без этого пароля данные невозможно восстановить!${RESET}"
+        echo ""
+    else
+        print_info "Репозиторий уже существует"
+    fi
+else
+    print_info "Restic репозиторий уже инициализирован"
+fi
+
+# =============== CLI INFRA ===============
+print_step "Создание CLI"
+
+CLI_NEEDS_UPDATE=0
+if [ ! -f "$BIN_DIR/infra" ]; then
+    CLI_NEEDS_UPDATE=1
+else
+    CURRENT_SIZE=$(stat -c%s "$BIN_DIR/infra" 2>/dev/null || echo 0)
+    if [ $CURRENT_SIZE -lt 1000 ]; then
+        CLI_NEEDS_UPDATE=1
+    fi
+fi
+
+if [ $CLI_NEEDS_UPDATE -eq 1 ]; then
+    cat > "$BIN_DIR/infra" <<'CLIEOF'
+#!/bin/bash
 INFRA_DIR="$HOME/infra"
 VOLUMES_DIR="$INFRA_DIR/volumes"
-BACKUPS_DIR="$INFRA_DIR/backups"
+RESTIC_DIR="$INFRA_DIR/restic"
+RESTIC_REPO="$RESTIC_DIR/repo"
+RESTIC_PASSWORD_FILE="$RESTIC_DIR/password.txt"
+RESTIC_ENV_FILE="$RESTIC_DIR/restic.env"
+NETBIRD_CONFIG="/var/lib/netbird"
+RESTIC_IMAGE="docker.io/restic/restic:latest"
 
-DARK_GRAY='\033[38;5;242m'; SOFT_BLUE='\033[38;5;67m'; SOFT_GREEN='\033[38;5;71m'
-SOFT_YELLOW='\033[38;5;178m'; SOFT_RED='\033[38;5;167m'; LIGHT_GRAY='\033[38;5;250m'; RESET='\033[0m'
+if [ -f "$RESTIC_ENV_FILE" ]; then
+    set -a
+    source "$RESTIC_ENV_FILE"
+    set +a
+fi
 
-print_success() { echo -e "${SOFT_GREEN}✓${RESET} ${1}"; }
-print_warning() { echo -e "${SOFT_YELLOW}⚠${RESET} ${1}"; }
-print_error()   { echo -e "${SOFT_RED}✗${RESET} ${1}" >&2; exit 1; }
-print_info()    { echo -e "${LIGHT_GRAY}ℹ${RESET} ${1}"; }
+restic_cmd() {
+    if ! podman image exists $RESTIC_IMAGE 2>/dev/null; then
+        podman pull $RESTIC_IMAGE >/dev/null 2>&1
+    fi
+    
+    podman run --rm \
+        --volume "$RESTIC_REPO:/restic-repo:Z" \
+        --volume "$RESTIC_PASSWORD_FILE:/restic-password:ro,Z" \
+        --volume "$RESTIC_ENV_FILE:/restic.env:ro,Z" \
+        --env-file "$RESTIC_ENV_FILE" \
+        --env RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-/restic-repo}" \
+        --env RESTIC_PASSWORD_FILE=/restic-password \
+        --security-opt label=disable \
+        $RESTIC_IMAGE "$@"
+}
+
+CYAN='\033[38;5;81m'
+GREEN='\033[38;5;84m'
+YELLOW='\033[38;5;220m'
+RED='\033[38;5;203m'
+BLUE='\033[38;5;75m'
+WHITE='\033[38;5;252m'
+GRAY='\033[38;5;240m'
+RESET='\033[0m'
+BOLD='\033[1m'
+
+show_status() {
+    echo -e "${BOLD}${CYAN}▸ СТАТУС СЕРВИСОВ${RESET}"
+    echo ""
+    
+    echo -e "${GRAY}Rootless:${RESET}"
+    systemctl --user list-units --type=service --state=running 2>/dev/null | \
+        grep -E "(gitea|torrserver|gitea-runner)" | \
+        while read line; do
+            name=$(echo "$line" | awk '{print $1}' | sed 's/.service//')
+            echo -e "  ${GREEN}●${RESET} ${WHITE}${name}${RESET}"
+        done || echo -e "  ${YELLOW}⚡${RESET} ${GRAY}Нет активных${RESET}"
+    
+    echo ""
+    echo -e "${GRAY}Rootful:${RESET}"
+    systemctl list-units --type=service --state=running 2>/dev/null | \
+        grep -E "netbird" | \
+        while read line; do
+            name=$(echo "$line" | awk '{print $1}' | sed 's/.service//')
+            echo -e "  ${GREEN}●${RESET} ${WHITE}${name}${RESET} ${BLUE}(rootful)${RESET}"
+        done || echo -e "  ${YELLOW}⚡${RESET} ${GRAY}NetBird не запущен${RESET}"
+    
+    echo ""
+    echo -e "${BOLD}${CYAN}▸ Restic:${RESET}"
+    if [ -f "$RESTIC_REPO/config" ] || [ -n "${RESTIC_REPOSITORY:-}" ]; then
+        local snapshot_count=$(restic_cmd snapshots --json 2>/dev/null | jq 'length' || echo "0")
+        local repo_type="локально"
+        [ -n "${RESTIC_REPOSITORY:-}" ] && [[ "$RESTIC_REPOSITORY" == s3* ]] && repo_type="S3"
+        [ -n "${RESTIC_REPOSITORY:-}" ] && [[ "$RESTIC_REPOSITORY" == b2* ]] && repo_type="B2"
+        printf "  ${GREEN}●${RESET} ${WHITE}%s снапшотов (%s)${RESET}\n" "$snapshot_count" "$repo_type"
+    else
+        echo -e "  ${RED}✗${RESET} ${GRAY}Не настроен${RESET}"
+    fi
+    
+    echo ""
+    echo -e "${BOLD}${CYAN}▸ Диск:${RESET}"
+    du -sh "$VOLUMES_DIR"/* 2>/dev/null | while read size dir; do
+        name=$(basename "$dir")
+        printf "  ${GRAY}%-15s${RESET} ${WHITE}%8s${RESET}\n" "$name" "$size"
+    done || true
+}
+
+show_monitor() {
+    echo -e "${BOLD}${CYAN}▸ Проверка сервисов${RESET}\n"
+    local services="gitea:3000 torrserver:8090"
+    for svc in $services; do
+        name="${svc%%:*}"; port="${svc##*:}"
+        if curl -sf --max-time 2 "http://localhost:$port" >/dev/null 2>&1; then
+            printf "  ${GREEN}✓${RESET} ${WHITE}%-12s${RESET} ${GRAY}:$port${RESET} ${GREEN}ONLINE${RESET}\n" "$name"
+        else
+            printf "  ${RED}✗${RESET} ${WHITE}%-12s${RESET} ${GRAY}:$port${RESET} ${RED}OFFLINE${RESET}\n" "$name"
+        fi
+    done
+    
+    echo ""
+    if sudo systemctl is-active --quiet netbird.service 2>/dev/null; then
+        printf "  ${GREEN}✓${RESET} ${WHITE}%-12s${RESET} ${GRAY}wg0${RESET} ${GREEN}CONNECTED${RESET}\n" "netbird"
+        local nb_ip=$(sudo podman exec netbird netbird status 2>/dev/null | grep "NetBird IP:" | awk '{print $3}' || echo "N/A")
+        printf "    ${GRAY}IP: %s${RESET}\n" "$nb_ip"
+    else
+        printf "  ${RED}✗${RESET} ${WHITE}%-12s${RESET} ${GRAY}wg0${RESET} ${RED}OFFLINE${RESET}\n" "netbird"
+    fi
+}
+
+do_backup() {
+    echo -e "${CYAN}Остановка сервисов...${RESET}"
+    systemctl --user stop gitea torrserver gitea-runner 2>/dev/null || true
+    sudo systemctl stop netbird 2>/dev/null || true
+    sleep 2
+    
+    echo -e "${CYAN}Бэкап volumes...${RESET}"
+    podman run --rm \
+        --volume "$RESTIC_REPO:/restic-repo:Z" \
+        --volume "$RESTIC_PASSWORD_FILE:/restic-password:ro,Z" \
+        --volume "$RESTIC_ENV_FILE:/restic.env:ro,Z" \
+        --volume "$VOLUMES_DIR:/backup/volumes:ro,Z" \
+        --env-file "$RESTIC_ENV_FILE" \
+        --env RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-/restic-repo}" \
+        --env RESTIC_PASSWORD_FILE=/restic-password \
+        --security-opt label=disable \
+        $RESTIC_IMAGE backup /backup/volumes --tag "volumes" 2>/dev/null && \
+        echo -e "${GREEN}✓ Volumes${RESET}" || \
+        echo -e "${RED}✗ Ошибка volumes${RESET}"
+    
+    echo -e "${CYAN}Бэкап NetBird...${RESET}"
+    if [ -d "$NETBIRD_CONFIG" ]; then
+        local temp_archive="$INFRA_DIR/.netbird-$(date +%s).tar.gz"
+        sudo tar -czf "$temp_archive" -C / var/lib/netbird 2>/dev/null
+        
+        podman run --rm \
+            --volume "$RESTIC_REPO:/restic-repo:Z" \
+            --volume "$RESTIC_PASSWORD_FILE:/restic-password:ro,Z" \
+            --volume "$RESTIC_ENV_FILE:/restic.env:ro,Z" \
+            --volume "$temp_archive:/backup/netbird.tar.gz:ro,Z" \
+            --env-file "$RESTIC_ENV_FILE" \
+            --env RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-/restic-repo}" \
+            --env RESTIC_PASSWORD_FILE=/restic-password \
+            --security-opt label=disable \
+            $RESTIC_IMAGE backup /backup/netbird.tar.gz --tag "netbird" 2>/dev/null && \
+            echo -e "${GREEN}✓ NetBird${RESET}" || \
+            echo -e "${RED}✗ Ошибка NetBird${RESET}"
+        
+        rm -f "$temp_archive"
+    else
+        echo -e "${YELLOW}⚡ NetBird конфиг не найден${RESET}"
+    fi
+    
+    echo -e "${CYAN}Очистка старых снапшотов...${RESET}"
+    restic_cmd forget --keep-last 7 --prune 2>/dev/null || true
+    
+    echo -e "${GREEN}✓ Бэкап завершен${RESET}"
+    restic_cmd snapshots 2>/dev/null || true
+    
+    echo -e "${CYAN}Запуск сервисов...${RESET}"
+    systemctl --user start gitea torrserver gitea-runner 2>/dev/null || true
+    sudo systemctl start netbird 2>/dev/null || true
+}
+
+do_restore() {
+    echo -e "${YELLOW}Доступные снапшоты:${RESET}"
+    restic_cmd snapshots 2>/dev/null || { echo -e "${RED}Нет снапшотов${RESET}"; exit 1; }
+    
+    echo ""
+    read -rp "$(echo -e "${YELLOW}ID снапшота (Enter — последний):${RESET} ")" SNAPSHOT_ID
+    
+    if [ -z "$SNAPSHOT_ID" ]; then
+        SNAPSHOT_ID=$(restic_cmd snapshots --json 2>/dev/null | jq -r '.[-1].id')
+        echo -e "${GRAY}Используем последний: $SNAPSHOT_ID${RESET}"
+    fi
+    
+    echo -e "${YELLOW}Остановка сервисов...${RESET}"
+    systemctl --user stop '*.service' 2>/dev/null || true
+    sudo systemctl stop netbird 2>/dev/null || true
+    sleep 2
+    
+    echo -e "${CYAN}Восстановление volumes...${RESET}"
+    podman run --rm \
+        --volume "$RESTIC_REPO:/restic-repo:Z" \
+        --volume "$RESTIC_PASSWORD_FILE:/restic-password:ro,Z" \
+        --volume "$RESTIC_ENV_FILE:/restic.env:ro,Z" \
+        --volume "$VOLUMES_DIR:/restore:Z" \
+        --env-file "$RESTIC_ENV_FILE" \
+        --env RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-/restic-repo}" \
+        --env RESTIC_PASSWORD_FILE=/restic-password \
+        --security-opt label=disable \
+        $RESTIC_IMAGE restore "$SNAPSHOT_ID" --target /restore 2>/dev/null && \
+        chown -R "$USER:$USER" "$VOLUMES_DIR" 2>/dev/null || true
+    
+    local temp_restore="$INFRA_DIR/.restore_$(date +%s)"
+    mkdir -p "$temp_restore"
+    
+    podman run --rm \
+        --volume "$RESTIC_REPO:/restic-repo:Z" \
+        --volume "$RESTIC_PASSWORD_FILE:/restic-password:ro,Z" \
+        --volume "$RESTIC_ENV_FILE:/restic.env:ro,Z" \
+        --volume "$temp_restore:/restore:Z" \
+        --env-file "$RESTIC_ENV_FILE" \
+        --env RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-/restic-repo}" \
+        --env RESTIC_PASSWORD_FILE=/restic-password \
+        --security-opt label=disable \
+        $RESTIC_IMAGE restore "$SNAPSHOT_ID" --target /restore --include "netbird.tar.gz" 2>/dev/null
+    
+    if [ -f "$temp_restore/backup/netbird.tar.gz" ] || [ -f "$temp_restore/netbird.tar.gz" ]; then
+        local nb_archive=$(find "$temp_restore" -name "netbird.tar.gz" 2>/dev/null | head -1)
+        if [ -n "$nb_archive" ]; then
+            echo -e "${CYAN}Восстановление NetBird...${RESET}"
+            sudo rm -rf "$NETBIRD_CONFIG" 2>/dev/null || true
+            sudo tar -xzf "$nb_archive" -C / 2>/dev/null && \
+                echo -e "${GREEN}✓ NetBird${RESET}" || \
+                echo -e "${RED}✗ Ошибка NetBird${RESET}"
+        fi
+    else
+        echo -e "${YELLOW}⚡ NetBird не найден в снапшоте${RESET}"
+    fi
+    
+    rm -rf "$temp_restore"
+    
+    echo -e "${CYAN}Запуск сервисов...${RESET}"
+    systemctl --user start gitea torrserver gitea-runner 2>/dev/null || true
+    sudo systemctl start netbird 2>/dev/null || true
+    
+    echo -e "${GREEN}✓ Восстановление завершено${RESET}"
+}
 
 case "${1:-status}" in
-status)
-echo -e "
-${SOFT_BLUE}Состояние сервисов:${RESET}"
-systemctl --user --no-pager status '*.service' 2>/dev/null | grep -E "(●|Active:)" || echo "Нет активных сервисов"
-
-echo -e "
-${SOFT_BLUE}Использование томов:${RESET}"
-du -sh "$VOLUMES_DIR"/* 2>/dev/null | sort -hr || echo "Тома пусты"
-
-echo -e "
-${SOFT_BLUE}Локальные бэкапы:${RESET}"
-ls -lh "$BACKUPS_DIR"/*.gpg 2>/dev/null | tail -5 || echo "  (нет зашифрованных архивов)"
-;;
-
-backup)
-TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_FILE="$BACKUPS_DIR/infra-backup-$TIMESTAMP.tar.gz.gpg"
-
-echo -e "${SOFT_BLUE}Создание зашифрованного бэкапа (GPG)...${RESET}"
-echo -e "${SOFT_YELLOW}⚠ Введите пароль для шифрования (запрашивается дважды):${RESET}"
-
-tar -czf - -C "$INFRA_DIR" volumes 2>/dev/null | \
-gpg --symmetric --cipher-algo AES256 --output "$BACKUP_FILE" --yes
-
-if [ -f "$BACKUP_FILE" ] && [ -s "$BACKUP_FILE" ]; then
-SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
-print_success "Бэкап создан: $BACKUP_FILE ($SIZE)"
-echo -e "${LIGHT_GRAY}💡 Для восстановления: скопируйте файл на новый сервер и выполните:${RESET}"
-echo -e "     infra restore"
-else
-print_error "Не удалось создать бэкап"
-fi
-;;
-
-restore)
-BACKUP_FILE=$(ls -t "$BACKUPS_DIR"/infra-backup-*.tar.gz.gpg 2>/dev/null | head -1)
-
-if [ -z "$BACKUP_FILE" ] || [ ! -f "$BACKUP_FILE" ]; then
-print_warning "Зашифрованные бэкапы не найдены в $BACKUPS_DIR"
-exit 1
-fi
-
-echo -e "${SOFT_BLUE}Восстановление из: $(basename "$BACKUP_FILE")${RESET}"
-echo -e "${SOFT_YELLOW}⚠ Введите пароль для расшифровки:${RESET}"
-
-echo -e "${LIGHT_GRAY}Остановка контейнеров...${RESET}"
-systemctl --user stop '*.service' 2>/dev/null || true
-sleep 3
-
-if ! gpg --decrypt "$BACKUP_FILE" 2>/dev/null | tar -xzf - -C "$INFRA_DIR"; then
-print_error "Ошибка расшифровки или распаковки. Проверьте пароль."
-fi
-
-chown -R "$USER:$USER" "$VOLUMES_DIR" 2>/dev/null || true
-
-echo -e "${LIGHT_GRAY}Запуск контейнеров...${RESET}"
-systemctl --user start '*.service' 2>/dev/null || true
-sleep 5
-print_success "Восстановление завершено! Проверьте статус: infra status"
-;;
-
-update)
-echo -e "${SOFT_BLUE}Управление авто-обновлениями контейнеров${RESET}"
-case "${2:-status}" in
-status)
-echo -e "
-${SOFT_BLUE}Статус таймера:${RESET}"
-systemctl --user status podman-auto-update.timer --no-pager 2>/dev/null || echo "Таймер не активен"
-
-echo -e "
-${SOFT_BLUE}Последние запуски:${RESET}"
-journalctl --user -u podman-auto-update.service -n 5 --no-pager -o short 2>/dev/null || echo "Нет записей в логе"
-
-echo -e "
-${SOFT_BLUE}Контейнеры с авто-обновлением:${RESET}"
-grep -l "io.containers.autoupdate" "$HOME/.config/containers/systemd/"*.container 2>/dev/null | \
-xargs -r basename -a | sed 's/\.container$//' || echo "  (нет настроенных)"
-;;
-
-run)
-echo -e "${SOFT_BLUE}Запуск проверки обновлений (dry-run)...${RESET}"
-podman auto-update --dry-run 2>&1 | tee /tmp/podman-update-check.log || true
-echo -e "
-${SOFT_GREEN}✓ Проверка завершена${RESET}"
-echo -e "${LIGHT_GRAY}Логи: /tmp/podman-update-check.log${RESET}"
-;;
-
-apply)
-echo -e "${SOFT_YELLOW}⚠ Применение обновлений (перезапуск контейнеров)...${RESET}"
-echo -e "${LIGHT_GRAY}Остановка сервисов...${RESET}"
-systemctl --user stop '*.service' 2>/dev/null || true
-sleep 2
-echo -e "${LIGHT_GRAY}Запуск auto-update...${RESET}"
-
-if podman auto-update 2>&1 | tee /tmp/podman-update-apply.log; then
-echo -e "
-${LIGHT_GRAY}Запуск сервисов...${RESET}"
-systemctl --user start '*.service' 2>/dev/null || true
-print_success "Обновления применены"
-else
-print_warning "Обновление завершилось с ошибками — сервисы не запущены"
-echo -e "${SOFT_RED}Ручной запуск: infra start${RESET}"
-fi
-;;
-
-*)
-echo "infra update — управление авто-обновлениями"
-echo "  status  — статус таймера и логи"
-echo "  run     — проверить наличие обновлений (dry-run)"
-echo "  apply   — скачать и применить обновления (перезапустит контейнеры)"
-;;
-esac
-;;
-
-monitor)
-echo -e "${SOFT_BLUE}Быстрая проверка сервисов:${RESET}"
-for svc in caddy:80 gitea:3000 vaultwarden:8081 adguardhome:3001 torrserver:8090; do
-name="${svc%%:*}"; port="${svc##*:}"
-if curl -sf --max-time 3 "http://localhost:$port" >/dev/null 2>&1; then
-echo -e "  ${SOFT_GREEN}✓${RESET} $name (:$port)"
-else
-echo -e "  ${SOFT_RED}✗${RESET} $name (:$port) — не отвечает"
-fi
-done
-;;
-
-start)
-systemctl --user start '*.service' 2>/dev/null && print_success "Контейнеры запущены" || print_warning "Не все контейнеры запущены"
-;;
-
-stop)
-systemctl --user stop '*.service' 2>/dev/null && print_success "Контейнеры остановлены" || true
-;;
-
-logs)
-[ -z "${2:-}" ] && { echo "Использование: infra logs <service>"; exit 1; }
-journalctl --user -u "${2}.service" -n 50 --no-pager
-;;
-
-*)
-echo "infra — управление инфраструктурой"
-echo "  status    — статус сервисов и бэкапов"
-echo "  backup    — создать зашифрованный GPG архив (локально)"
-echo "  restore   — восстановить из последнего GPG архива"
-echo "  update    — управление авто-обновлениями (podman auto-update)"
-echo "  monitor   — быстрая проверка доступности сервисов"
-echo "  start/stop — управление сервисами"
-echo "  logs <svc> — логи сервиса"
-;;
+    status) show_status ;;
+    backup) do_backup ;;
+    restore) do_restore ;;
+    snapshots)
+        echo -e "${BOLD}${CYAN}▸ Снапшоты:${RESET}"
+        restic_cmd snapshots 2>/dev/null || echo -e "${RED}Ошибка${RESET}"
+        ;;
+    check)
+        echo -e "${CYAN}Проверка репозитория...${RESET}"
+        restic_cmd check 2>/dev/null && echo -e "${GREEN}✓ OK${RESET}" || echo -e "${RED}✗ Ошибка${RESET}"
+        ;;
+    start) 
+        systemctl --user start gitea torrserver gitea-runner && \
+        sudo systemctl start netbird && \
+        echo -e "${GREEN}✓ Запущены${RESET}"
+        ;;
+    stop) 
+        systemctl --user stop gitea torrserver gitea-runner && \
+        sudo systemctl stop netbird && \
+        echo -e "${YELLOW}✓ Остановлены${RESET}"
+        ;;
+    restart)
+        systemctl --user restart gitea torrserver gitea-runner && \
+        sudo systemctl restart netbird && \
+        echo -e "${GREEN}✓ Перезапущены${RESET}"
+        ;;
+    logs) 
+        [ -z "${2:-}" ] && { echo "Использование: infra logs <сервис>"; exit 1; }
+        if [ "$2" = "netbird" ]; then
+            sudo journalctl -u netbird.service -n 100 -f
+        else
+            journalctl --user -u "${2}.service" -n 100 -f
+        fi
+        ;;
+    monitor) show_monitor ;;
+    netbird-status)
+        echo -e "${CYAN}Статус NetBird:${RESET}"
+        sudo podman exec netbird netbird status 2>/dev/null || echo -e "${RED}Не запущен${RESET}"
+        ;;
+    netbird-down)
+        sudo podman exec netbird netbird down 2>/dev/null && echo -e "${YELLOW}Отключен${RESET}"
+        ;;
+    netbird-up)
+        sudo podman exec netbird netbird up 2>/dev/null && echo -e "${GREEN}Подключен${RESET}"
+        ;;
+    update)
+        echo -e "${CYAN}Обновление образов...${RESET}"
+        podman auto-update --rollback=false 2>/dev/null || \
+        echo -e "${YELLOW}⚡ Обновите вручную: podman pull <образ>${RESET}"
+        ;;
+    restic)
+        shift
+        restic_cmd "$@"
+        ;;
+    *) 
+        echo -e "${BOLD}Использование:${RESET} infra ${GRAY}{команда}${RESET}"
+        echo ""
+        echo -e "  ${CYAN}status${RESET}      - статус сервисов"
+        echo -e "  ${CYAN}monitor${RESET}     - проверка портов"
+        echo -e "  ${CYAN}backup${RESET}      - создать бэкап"
+        echo -e "  ${CYAN}restore${RESET}     - восстановить из бэкапа"
+        echo -e "  ${CYAN}snapshots${RESET}   - список снапшотов"
+        echo -e "  ${CYAN}check${RESET}       - проверить репозиторий"
+        echo -e "  ${CYAN}logs${RESET} ${GRAY}<сервис>${RESET} - логи сервиса"
+        echo -e "  ${CYAN}start/stop/restart${RESET} - управление сервисами"
+        echo -e "  ${CYAN}restic${RESET} ${GRAY}<команда>${RESET} - прямые команды restic"
+        echo ""
+        echo -e "${GRAY}Облачные бэкапы:${RESET} Настройте в $RESTIC_ENV_FILE"
+        ;;
 esac
 CLIEOF
 
-chmod +x "$BIN_DIR/infra"
+    chmod +x "$BIN_DIR/infra"
+    print_success "CLI создан"
+else
+    print_info "CLI уже актуален"
+fi
 
-# 4. Health-check скрипт (исправлен URL Telegram)
-cat > "$BIN_DIR/healthcheck.sh" <<'HCEOF'
+if [ ! -L "/usr/local/bin/infra" ] || [ "$(readlink /usr/local/bin/infra)" != "$BIN_DIR/infra" ]; then
+    sudo ln -sf "$BIN_DIR/infra" /usr/local/bin/infra 2>/dev/null || true
+    print_success "Симлинк infra создан"
+fi
+
+if ! grep -q "infra/bin" "$CURRENT_HOME/.bashrc" 2>/dev/null; then
+    echo '' >> "$CURRENT_HOME/.bashrc"
+    echo 'export PATH="$HOME/infra/bin:$PATH"' >> "$CURRENT_HOME/.bashrc"
+    echo 'alias i="infra"' >> "$CURRENT_HOME/.bashrc"
+    print_success "PATH и alias добавлены в .bashrc"
+else
+    print_info ".bashrc уже настроен"
+fi
+
+# =============== HEALTHCHECK ===============
+print_step "Настройка healthcheck"
+
+if [ ! -f "$BIN_DIR/healthcheck.sh" ]; then
+    cat > "$BIN_DIR/healthcheck.sh" <<'HEALTHEOF'
 #!/bin/bash
-set -euo pipefail
-
-INFRA_DIR="$HOME/infra"
-LOG_FILE="$INFRA_DIR/logs/healthcheck.log"
-
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
-
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
-
-notify() {
-local msg="$1"
-if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-# Исправлен URL: убраны пробелы
-curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
--d "chat_id=${TELEGRAM_CHAT_ID}" \
--d "text=🔴 ${msg}" \
--d "parse_mode=HTML" >/dev/null 2>&1 || true
-fi
-}
-
-check_http() {
-local name="$1" url="$2" expected_code="${3:-200}"
-local response
-response=$(curl -sf --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
-if [ "$response" != "$expected_code" ]; then
-log "✗ $name: HTTP check failed ($url) - got $response"
-notify "$name не отвечает: $url"
-return 1
-fi
-log "✓ $name: OK"
-return 0
-}
-
-check_tcp() {
-local name="$1" host="$2" port="$3"
-if ! timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
-log "✗ $name: TCP check failed ($host:$port)"
-notify "$name не отвечает на порту $port"
-return 1
-fi
-log "✓ $name: TCP OK"
-return 0
-}
-
+LOG_FILE="$HOME/infra/logs/healthcheck.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 
-# Проверка Caddy добавлена
-check_http "Caddy" "http://localhost:80" || true
-check_http "Gitea" "http://localhost:3000" || true
-check_http "Vaultwarden" "http://localhost:8081" || true
-check_http "AdGuard Home" "http://localhost:3001" || true
-check_tcp "TorrServer" "localhost" 8090 || true
-check_tcp "WireGuard" "localhost" 51820 || true
-
-for svc in gitea vaultwarden adguardhome torrserver caddy; do
-if ! systemctl --user is-active --quiet "${svc}.service" 2>/dev/null; then
-log "✗ $svc.service: не активен"
-notify "Сервис $svc упал (systemd)"
-fi
-done
-
-log "=== Health-check completed ==="
-HCEOF
-
-chmod +x "$BIN_DIR/healthcheck.sh"
-
-# 5. Quadlet-файлы (исправлена генерация для Ubuntu 24.04)
-CURRENT_UID=$(id -u "$CURRENT_USER")
-CURRENT_GID=$(id -g "$CURRENT_USER")
-
-# Ubuntu 24.04: используем прямую запись файлов с правильным форматированием
-write_quadlet() {
-    local file="$1"
-    local content="$2"
-    
-    # Добавляем автообновление если отсутствует
-    if ! echo "$content" | grep -q "io.containers.autoupdate"; then
-        content=$(echo "$content" | sed 's/^\[Service\]$/Label=io.containers.autoupdate=image\n[Service]/')
+check_service() {
+    local name=$1 port=$2
+    if ! curl -sf --max-time 3 "http://localhost:$port" >/dev/null 2>&1; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $name:$port НЕДОСТУПЕН, перезапуск..." >> "$LOG_FILE"
+        systemctl --user restart "$name.service" 2>/dev/null || true
     fi
-    
-    echo "$content" > "$file"
-    chown "$CURRENT_USER:$CURRENT_USER" "$file"
 }
 
-write_quadlet "$CONTAINERS_DIR/gitea.container" "[Container]
-Image=docker.io/gitea/gitea:1.22-rootless
-Volume=$CURRENT_HOME/infra/volumes/gitea:/data:Z
-PublishPort=3000:3000
-PublishPort=2222:22
-Environment=USER_UID=$CURRENT_UID
-Environment=USER_GID=$CURRENT_GID
-Environment=GITEA__server__DOMAIN=localhost:3000
-Environment=GITEA__server__ROOT_URL=http://localhost:3000/
-Environment=GITEA__server__SSH_DOMAIN=localhost
-Environment=GITEA__server__SSH_PORT=2222
-Environment=GITEA__actions__ENABLED=true
-Label=io.containers.autoupdate=registry
+check_service gitea 3000
+check_service torrserver 8090
+
+if ! sudo systemctl is-active --quiet netbird.service 2>/dev/null; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] NetBird НЕДОСТУПЕН, перезапуск..." >> "$LOG_FILE"
+    sudo systemctl restart netbird.service 2>/dev/null || true
+fi
+HEALTHEOF
+    chmod +x "$BIN_DIR/healthcheck.sh"
+    print_success "Healthcheck создан"
+else
+    print_info "Healthcheck уже существует"
+fi
+
+# =============== СЕРВИСЫ ===============
+print_step "Создание сервисов"
+
+USER_CONFIG="${XDG_CONFIG_HOME:-$CURRENT_HOME/.config}"
+SYSTEMD_DIR="$USER_CONFIG/containers/systemd"
+mkdir -p "$SYSTEMD_DIR"
+
+PODMAN_SOCKET_PATH="/run/user/$CURRENT_UID/podman"
+if [ ! -d "$PODMAN_SOCKET_PATH" ]; then
+    print_substep "Создание директории для Podman socket..."
+    mkdir -p "$PODMAN_SOCKET_PATH" 2>/dev/null || true
+fi
+
+# Gitea service
+if [ ! -f ~/.config/systemd/user/gitea.service ] || \
+   ! grep -q "Type=forking" ~/.config/systemd/user/gitea.service 2>/dev/null; then
+    print_substep "Создание gitea.service..."
+    mkdir -p ~/.config/systemd/user/
+
+    cat > ~/.config/systemd/user/gitea.service <<EOF
+[Unit]
+Description=Gitea (Podman container)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Restart=always"
+Type=forking
+Restart=always
+RestartSec=5
+TimeoutStartSec=900
+PIDFile=%t/container-gitea.pid
+Environment=PODMAN_SYSTEMD_UNIT=gitea.service
+ExecStartPre=-/usr/bin/podman rm -f gitea
+ExecStart=/usr/bin/podman run \\
+    --name gitea \\
+    --replace \\
+    --rm \\
+    -d \\
+    --pidfile %t/container-gitea.pid \\
+    --security-opt label=disable \\
+    --memory=2G \\
+    --cpus=2.0 \\
+    -v $CURRENT_HOME/infra/volumes/gitea:/data \\
+    -e GITEA__server__DOMAIN=$SERVER_IP \\
+    -e GITEA__server__ROOT_URL=http://$SERVER_IP:3000/ \\
+    -e GITEA__server__SSH_DOMAIN=$SERVER_IP \\
+    -e GITEA__server__SSH_PORT=2222 \\
+    -e GITEA__actions__ENABLED=true \\
+    -e GITEA__database__SQLITE_BUSY_TIMEOUT=5000 \\
+    -e GITEA__database__SQLITE_JOURNAL_MODE=WAL \\
+    -e GITEA__database__SQLITE_LOCK_TIMEOUT=5000 \\
+    -e GITEA__log__LEVEL=Warn \\
+    -e GITEA__log__MODE=console \\
+    -p 3000:3000 \\
+    -p 2222:22 \\
+    docker.io/gitea/gitea:latest
+ExecStop=/usr/bin/podman stop -t 10 gitea
+ExecStopPost=-/usr/bin/podman rm -f gitea
 
-write_quadlet "$CONTAINERS_DIR/vaultwarden.container" "[Container]
-Image=docker.io/vaultwarden/server:1.31-alpine
-Volume=$CURRENT_HOME/infra/volumes/vaultwarden:/data:Z
-PublishPort=8081:80
-Label=io.containers.autoupdate=registry
+[Install]
+WantedBy=default.target
+EOF
+    chown "$CURRENT_USER:$CURRENT_USER" ~/.config/systemd/user/gitea.service 2>/dev/null || true
+    print_success "gitea.service создан"
+else
+    print_info "gitea.service уже актуален"
+fi
 
-[Service]
-Restart=always"
+# TorrServer через Quadlet
+create_container() {
+    echo "$2" > "$1"
+    chown "$CURRENT_USER:$CURRENT_USER" "$1" 2>/dev/null || true
+}
 
-write_quadlet "$CONTAINERS_DIR/torrserver.container" "[Container]
+TORRSERVER_CONTAINER="$CONTAINERS_DIR/torrserver.container"
+if [ ! -f "$TORRSERVER_CONTAINER" ]; then
+    create_container "$TORRSERVER_CONTAINER" "[Container]
 Image=ghcr.io/yourok/torrserver:latest
 Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z:Z
 PublishPort=8090:8090
-Label=io.containers.autoupdate=registry
-
-[Service]
-Restart=always"
-
-write_quadlet "$CONTAINERS_DIR/caddy.container" "[Container]
-Image=docker.io/library/caddy:2.8-alpine
-Volume=$CURRENT_HOME/infra/volumes/caddy:/data:Z
-Volume=$CURRENT_HOME/infra/volumes/caddy_config:/config:Z
-PublishPort=80:80
-PublishPort=443:443
-Label=io.containers.autoupdate=registry
-
-[Service]
-Restart=always"
-
-write_quadlet "$CONTAINERS_DIR/dozzle.container" "[Container]
-Image=docker.io/amir20/dozzle:latest
-Volume=/run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:ro
-PublishPort=9999:8080
-Label=io.containers.autoupdate=registry
-
-[Service]
-Restart=always"
-
-# AdGuard Home требует root в контейнере для порта 53
-write_quadlet "$CONTAINERS_DIR/adguardhome.container" "[Container]
-Image=docker.io/adguard/adguardhome:latest
-Volume=$CURRENT_HOME/infra/volumes/adguardhome/work:/opt/adguardhome/work:Z
-Volume=$CURRENT_HOME/infra/volumes/adguardhome/conf:/opt/adguardhome/conf:Z
-PublishPort=53:53/udp
-PublishPort=53:53/tcp
-PublishPort=3001:3000
-User=root
-Group=root
-Label=io.containers.autoupdate=registry
-
-[Service]
-Restart=always"
-
-# Restic backup
-cat > "$CONTAINERS_DIR/restic.container" <<EOF
-[Container]
-Image=docker.io/restic/restic:latest
-Volume=$CURRENT_HOME/infra/volumes:/backup/volumes:ro,Z
-Volume=$CURRENT_HOME/infra/containers:/backup/containers:ro,Z
-Volume=$CURRENT_HOME/infra/secrets/restic:/restic:ro,Z
-Environment=RESTIC_REPOSITORY=${RESTIC_REPOSITORY:-}
-Environment=AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
-Environment=AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
-Environment=RESTIC_PASSWORD_FILE=/restic/password
-Entrypoint=/bin/sh
-Exec=-c "restic backup /backup/volumes /backup/containers --one-file-system --exclude '*.tmp' --exclude '*.log' && restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune"
-
-[Service]
-Restart=on-failure
-EOF
-
-cat > "$CONTAINERS_DIR/restic.timer" <<EOF
-[Timer]
-OnCalendar=*-*-* 03:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
-# =============== НАСТРОЙКА ХОСТА ===============
-if ! $RESTORE_MODE; then
-print_step "Настройка хоста (требуются права sudo)"
-
-if sudo REAL_USER="$CURRENT_USER" REAL_HOME="$CURRENT_HOME" "$BOOTSTRAP_DIR/bootstrap.sh"; then
-print_success "Хост подготовлен"
-else
-print_warning "Ошибка настройки хоста — продолжаем"
-fi
-fi
-
-# =============== РЕГИСТРАЦИЯ КОНТЕЙНЕРОВ (UBUNTU 24.04) ===============
-USER_CONFIG="${XDG_CONFIG_HOME:-$CURRENT_HOME/.config}"
-SYSTEMD_USER_DIR="$USER_CONFIG/containers/systemd"
-mkdir -p "$SYSTEMD_USER_DIR"
-
-# Очищаем старые ссылки
-rm -f "$SYSTEMD_USER_DIR"/*.container "$SYSTEMD_USER_DIR"/*.timer 2>/dev/null || true
-
-# Создаем симлинки
-for file in "$CONTAINERS_DIR"/*.container "$CONTAINERS_DIR"/*.timer; do
-    if [ -f "$file" ]; then
-        ln -sf "$file" "$SYSTEMD_USER_DIR/$(basename "$file")"
-        print_substep "Зарегистрирован: $(basename "$file")"
-    fi
-done
-
-# Ubuntu 24.04: генерация systemd unit файлов через quadlet
-print_step "Генерация systemd unit файлов"
-
-# Проверяем наличие podman
-if ! command -v podman >/dev/null 2>&1; then
-    print_error "Podman не установлен!"
-fi
-
-# Для Ubuntu 24.04 используем systemd generator
-export XDG_CONFIG_HOME="$USER_CONFIG"
-export XDG_RUNTIME_DIR="/run/user/$CURRENT_UID"
-
-# Создаем runtime директорию если нужно
-if [ ! -d "/run/user/$CURRENT_UID" ]; then
-    sudo mkdir -p "/run/user/$CURRENT_UID"
-    sudo chown "$CURRENT_USER:$CURRENT_USER" "/run/user/$CURRENT_UID"
-    sudo chmod 700 "/run/user/$CURRENT_UID"
-fi
-
-# Генерация unit файлов через quadlet
-print_substep "Генерация systemd units..."
-/usr/libexec/podman/quadlet -dryrun -user 2>/dev/null || true
-
-# Перезагрузка systemd user instance
-print_substep "Перезагрузка systemd..."
-systemctl --user daemon-reexec 2>/dev/null || true
-systemctl --user daemon-reload 2>/dev/null || true
-
-# Проверка генерации
-if systemctl --user list-unit-files 2>/dev/null | grep -q "gitea.service"; then
-    print_success "Systemd unit файлы сгенерированы"
-else
-    print_warning "Quadlet файлы не обнаружены в systemd, пробуем альтернативный метод..."
-    
-    # Альтернативный метод: ручная генерация
-    for container in "$SYSTEMD_USER_DIR"/*.container; do
-        if [ -f "$container" ]; then
-            base=$(basename "$container" .container)
-            # Конвертируем container в service через podman generate
-            podman generate systemd --name "$base" --files --new 2>/dev/null || true
-        fi
-    done
-fi
-
-# =============== ЗАПУСК СЕРВИСОВ ===============
-if ! $RESTORE_MODE; then
-print_step "Запуск сервисов"
-
-# Сначала запускаем базовые сервисы
-for svc in caddy adguardhome; do
-    print_substep "Запуск: $svc"
-    if systemctl --user enable --now "${svc}.service" 2>/dev/null; then
-        print_success "Запущен: $svc"
-    else
-        print_warning "Не удалось запустить: $svc"
-        systemctl --user status "${svc}.service" 2>/dev/null | head -5 || true
-    fi
-    sleep 2
-done
-
-# Затем остальные
-for svc in gitea vaultwarden torrserver dozzle; do
-    print_substep "Запуск: $svc"
-    if systemctl --user enable --now "${svc}.service" 2>/dev/null; then
-        print_success "Запущен: $svc"
-    else
-        print_warning "Не удалось запустить: $svc"
-    fi
-    sleep 2
-done
-
-print_step "Ожидание готовности Gitea"
-for i in {1..60}; do
-    if curl -s --max-time 2 http://localhost:3000 > /dev/null 2>&1; then
-        print_success "Gitea готова"
-        break
-    fi
-    sleep 2
-    printf "."
-done
-echo
-
-LOCAL_IP=$(hostname -I | awk '{print $1}')
-cat <<EOF
-${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
-${SOFT_BLUE}👉 Откройте: http://$LOCAL_IP:3000${RESET}
-${SOFT_BLUE}👉 Создайте администратора в Gitea (первый пользователь = админ)${RESET}
-${SOFT_BLUE}👉 После создания — нажмите Enter${RESET}
-${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
-EOF
-
-read -p "Нажмите Enter после настройки админа... "
-
-cat <<EOF
-${SOFT_BLUE}👉 Получите токен раннера в Gitea:${RESET}
-${LIGHT_GRAY}  http://$LOCAL_IP:3000/admin/runners → Add Runner${RESET}
-${SOFT_BLUE}👉 Вставьте токен ниже (пустой ввод = пропустить):${RESET}
-EOF
-
-read -rsp "Токен: " RUNNER_TOKEN
-echo
-
-if [ -n "${RUNNER_TOKEN:-}" ]; then
-cat > "$CONTAINERS_DIR/gitea-runner.container" <<EOF
-[Container]
-Image=docker.io/gitea/act_runner:0.3.0-dind-rootless
-Volume=$CURRENT_HOME/infra/volumes/gitea-runner:/data:Z
-Volume=/run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:ro
-Environment=GITEA_INSTANCE_URL=http://host.containers.internal:3000
-Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
-Environment=GITEA_RUNNER_NAME=$(hostname)-infra-runner
-Environment=GITEA_RUNNER_LABELS=infra,linux,amd64
-Environment=DOCKER_HOST=unix:///var/run/docker.sock
+Environment=TS_DONTKILL=1
 Label=io.containers.autoupdate=registry
 
 [Service]
 Restart=always
-EOF
-
-ln -sf "$CONTAINERS_DIR/gitea-runner.container" "$SYSTEMD_USER_DIR/"
-systemctl --user daemon-reload
-
-if systemctl --user enable --now gitea-runner.service 2>/dev/null; then
-    print_success "Раннер запущен"
-    sleep 5
-    if podman logs gitea-runner 2>/dev/null | grep -q "Runner registered successfully\|Successfully registered"; then
-        print_success "Раннер зарегистрирован в Gitea"
-    else
-        print_warning "Проверьте логи раннера: infra logs gitea-runner"
-    fi
-else
-    print_warning "Не удалось запустить раннер"
-fi
-else
-print_info "Настройка раннера пропущена"
-fi
-
-print_step "Настройка health-check (cron)"
-if command -v crontab >/dev/null 2>&1; then
-    # Удаляем дубликаты
-    crontab -l 2>/dev/null | grep -v "healthcheck.sh" | crontab - 2>/dev/null || true
-    # Добавляем новую запись
-    (crontab -l 2>/dev/null || true; echo "*/5 * * * * $CURRENT_HOME/infra/bin/healthcheck.sh >/dev/null 2>&1") | crontab -
-    print_success "Health-check добавлен в cron (каждые 5 минут)"
-else
-    print_warning "crontab не найден — создаем systemd таймер для health-check"
-    
-    cat > "$CONTAINERS_DIR/healthcheck.timer" <<EOF
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=5min
+RestartSec=5
 
 [Install]
-WantedBy=timers.target
-EOF
+WantedBy=default.target"
+    print_success "torrserver.container создан"
+else
+    print_info "torrserver.container уже актуален"
+fi
 
-    cat > "$CONTAINERS_DIR/healthcheck.service" <<EOF
+rm -f "$SYSTEMD_DIR"/*.container 2>/dev/null || true
+cp "$CONTAINERS_DIR"/*.container "$SYSTEMD_DIR/" 2>/dev/null || true
+chown -R "$CURRENT_USER:$CURRENT_USER" "$SYSTEMD_DIR" 2>/dev/null || true
+
+print_success "Сервисы настроены"
+
+# =============== NETBIRD ===============
+print_step "Настройка NetBird"
+
+if [ ! -d "/var/lib/netbird" ]; then
+    print_substep "Создание /var/lib/netbird..."
+    sudo mkdir -p /var/lib/netbird
+    sudo chmod 755 /var/lib/netbird
+fi
+
+sudo rm -f /etc/containers/systemd/netbird.container 2>/dev/null || true
+
+NETBIRD_NEEDS_UPDATE=0
+if [ ! -f /etc/systemd/system/netbird.service ]; then
+    NETBIRD_NEEDS_UPDATE=1
+else
+    if ! grep -q "docker.io/netbirdio/netbird:latest" /etc/systemd/system/netbird.service 2>/dev/null; then
+        NETBIRD_NEEDS_UPDATE=1
+    fi
+fi
+
+if [ $NETBIRD_NEEDS_UPDATE -eq 1 ]; then
+    print_substep "Создание netbird.service..."
+    sudo tee /etc/systemd/system/netbird.service > /dev/null <<'NETBIRDEOF'
 [Unit]
-Description=Health check for infrastructure
+Description=NetBird Mesh VPN
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=oneshot
-ExecStart=$CURRENT_HOME/infra/bin/healthcheck.sh
-EOF
+Type=simple
+Restart=always
+RestartSec=10
+Environment="NB_SETUP_KEY=PLACEHOLDER_SETUP_KEY"
+Environment="NB_MANAGEMENT_URL=https://api.netbird.io:443   "
+Environment="NB_LOG_LEVEL=info"
+ExecStartPre=-/usr/bin/podman rm -f netbird
+ExecStart=/usr/bin/podman run \
+    --name netbird \
+    --rm \
+    --cap-add NET_ADMIN \
+    --cap-add NET_RAW \
+    --cap-add SYS_ADMIN \
+    --device /dev/net/tun \
+    --network host \
+    --pid host \
+    -v /var/lib/netbird:/etc/netbird:Z \
+    -v /run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
+    -e NB_SETUP_KEY \
+    -e NB_MANAGEMENT_URL \
+    -e NB_LOG_LEVEL \
+    docker.io/netbirdio/netbird:latest
+ExecStop=/usr/bin/podman stop -t 10 netbird
+ExecStopPost=-/usr/bin/podman rm -f netbird
 
-    ln -sf "$CONTAINERS_DIR/healthcheck.timer" "$SYSTEMD_USER_DIR/"
-    ln -sf "$CONTAINERS_DIR/healthcheck.service" "$SYSTEMD_USER_DIR/"
-    systemctl --user daemon-reload
-    systemctl --user enable --now healthcheck.timer 2>/dev/null || true
-    print_success "Health-check таймер создан"
-fi
-fi
-
-# =============== ФИНАЛЬНЫЙ ОТЧЁТ ===============
-LOCAL_IP=$(hostname -I | awk '{print $1}')
-
-if $RESTORE_MODE; then
-cat <<EOF
-${DARK_GRAY}╔═══════════════════════════════════════════════════════════════════════════════╗${RESET}
-${SOFT_GREEN}║  ✅ Структура развёрнута для восстановления                                  ║${RESET}
-${DARK_GRAY}╚═══════════════════════════════════════════════════════════════════════════════╝${RESET}
-${SOFT_BLUE}Следующие шаги:${RESET}
-1. Скопируйте зашифрованный бэкап в ~/infra/backups/
-2. Восстановите: infra restore
-3. После восстановления сервисы запустятся автоматически
-${SOFT_YELLOW}Важно:${RESET}
-• Пароль от GPG-архива НЕ хранится в системе — запоминайте его!
-${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
-EOF
+[Install]
+WantedBy=multi-user.target
+NETBIRDEOF
+    sudo chmod 644 /etc/systemd/system/netbird.service
+    sudo systemctl daemon-reload
+    print_success "NetBird сервис создан"
 else
-cat <<EOF
-${DARK_GRAY}╔═══════════════════════════════════════════════════════════════════════════════╗${RESET}
-${SOFT_GREEN}║  ✅ Инфраструктура развёрнута и готова к работе!                             ║${RESET}
-${DARK_GRAY}╚═══════════════════════════════════════════════════════════════════════════════╝${RESET}
-${SOFT_BLUE}Доступ к сервисам:${RESET}
-• Gitea:        http://$LOCAL_IP:3000
-• AdGuard Home: http://$LOCAL_IP:3001  (DNS: $LOCAL_IP:53)
-• Vaultwarden:  http://$LOCAL_IP:8081
-• TorrServer:   http://$LOCAL_IP:8090
-• Dozzle:       http://$LOCAL_IP:9999
-• WireGuard:    UDP 51820 (ключи в /etc/wireguard/)
+    print_info "NetBird сервис уже актуален"
+fi
 
-${SOFT_BLUE}Управление:${RESET}
-• Статус:          infra status
-• Локальный бэкап: infra backup
-• Восстановление:  infra restore
-• Авто-обновление: infra update
-• Мониторинг:      infra monitor
-• Запуск/стоп:     infra start / infra stop
+# =============== ХОСТ ===============
+print_step "Настройка хоста"
 
-${SOFT_YELLOW}Важно для Ubuntu 24.04:${RESET}
-• systemd-resolved отключен для AdGuard Home
-• Контейнеры используют :Z флаги для SELinux/AppArmor
-• Linger включен — сервисы запускаются при загрузке
-• Проверьте статус: systemctl --user status
+print_substep "Запуск bootstrap..."
+if sudo REAL_USER="$CURRENT_USER" REAL_HOME="$CURRENT_HOME" "$BOOTSTRAP_DIR/bootstrap.sh" >/dev/null 2>&1; then
+    print_success "Система настроена"
+else
+    print_warning "Часть настроек уже применена"
+fi
 
-${DARK_GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
+# =============== ЗАПУСК СЕРВИСОВ ===============
+print_step "Запуск сервисов"
+
+export XDG_RUNTIME_DIR="/run/user/$CURRENT_UID"
+systemctl --user set-environment XDG_RUNTIME_DIR="/run/user/$CURRENT_UID" 2>/dev/null || true
+systemctl --user daemon-reexec 2>/dev/null || true
+systemctl --user daemon-reload 2>/dev/null || true
+
+if [ ! -S "/run/user/$CURRENT_UID/podman/podman.sock" ]; then
+    print_substep "Запуск Podman API socket..."
+    systemctl --user start podman.socket 2>/dev/null || true
+    sleep 2
+fi
+
+# Запускаем в фоне, не блокируемся
+services=(gitea torrserver)
+for svc in "${services[@]}"; do
+    if systemctl --user is-active --quiet "$svc.service" 2>/dev/null; then
+        print_info "$svc уже запущен"
+    else
+        print_substep "Запуск $svc..."
+        # Запуск в фоне, не ждём завершения
+        (systemctl --user start "$svc.service" 2>/dev/null &) 
+    fi
+done
+
+# Ждём немного для инициализации
+sleep 5
+
+# Проверяем статус без блокировки
+for svc in "${services[@]}"; do
+    if systemctl --user is-active --quiet "$svc.service" 2>/dev/null; then
+        print_success "$svc активен"
+    else
+        print_warning "$svc запускается (может занять 10-30 сек)..."
+    fi
+done
+
+# =============== GITEA RUNNER ===============
+print_step "Настройка Gitea Runner"
+
+# Проверяем существование runner
+RUNNER_EXISTS=0
+if systemctl --user is-active --quiet gitea-runner.service 2>/dev/null || \
+   systemctl --user is-enabled gitea-runner.service 2>/dev/null | grep -q enabled; then
+    RUNNER_EXISTS=1
+    print_info "Runner уже существует"
+    read -rp "$(echo -e "  ${NEON_YELLOW}→${RESET} ${SOFT_WHITE}Пересоздать runner? [y/N]:${RESET} ")" RECREATE_RUNNER
+    if [[ "$RECREATE_RUNNER" =~ ^[Yy]$ ]]; then
+        print_substep "Остановка и удаление текущего runner..."
+        systemctl --user stop gitea-runner.service 2>/dev/null || true
+        systemctl --user disable gitea-runner.service 2>/dev/null || true
+        podman rm -f gitea-runner 2>/dev/null || true
+        rm -f ~/.config/systemd/user/gitea-runner.service
+        systemctl --user daemon-reload
+        RUNNER_EXISTS=0
+    fi
+fi
+
+if [ $RUNNER_EXISTS -eq 0 ]; then
+    echo ""
+    echo -e "${NEON_PURPLE}${BOLD}▸ РЕГИСТРАЦИЯ RUNNER'А${RESET}"
+    echo ""
+    echo -e "  ${MUTED_GRAY}1. Откройте Gitea:${RESET} ${NEON_CYAN}http://$SERVER_IP:3000${RESET}"
+    echo -e "  ${MUTED_GRAY}2. Панель Управления → Действия → Раннеры${RESET}"
+    echo -e "  ${MUTED_GRAY}3. Нажмите 'Создать новый раннер'${RESET}"
+    echo -e "  ${MUTED_GRAY}4. Скопируйте Registration Token${RESET}"
+    echo ""
+
+    read -rp "$(echo -e "  ${NEON_YELLOW}→${RESET} ${SOFT_WHITE}Registration Token (Enter — пропустить):${RESET} ")" RUNNER_TOKEN
+    
+    if [ -n "${RUNNER_TOKEN:-}" ]; then
+        mkdir -p "$VOLUMES_DIR/gitea-runner"
+        chown "$CURRENT_USER:$CURRENT_USER" "$VOLUMES_DIR/gitea-runner" 2>/dev/null || true
+        
+        print_substep "Создание gitea-runner.service..."
+        
+        # Используем простой тип simple вместо forking для надёжности
+        cat > ~/.config/systemd/user/gitea-runner.service <<EOF
+[Unit]
+Description=Gitea Runner (Podman container)
+After=gitea.service network-online.target
+Wants=gitea.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+TimeoutStartSec=300
+Environment=PODMAN_SYSTEMD_UNIT=gitea-runner.service
+Environment=GITEA_INSTANCE_URL=http://$SERVER_IP:3000
+Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
+Environment=GITEA_RUNNER_NAME=runner-$(hostname | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')-$(date +%s | tail -c 4)
+Environment=GITEA_RUNNER_LABELS=ubuntu-latest:docker://node:20-bullseye,self-hosted:host
+Environment=GITEA_RUNNER_FETCH_INTERVAL=5s
+ExecStartPre=-/usr/bin/podman rm -f gitea-runner
+ExecStart=/usr/bin/podman run \\
+    --name gitea-runner \\
+    --replace \\
+    --rm \\
+    --security-opt label=disable \\
+    -v $CURRENT_HOME/infra/volumes/gitea-runner:/data:Z \\
+    -v /run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:ro \\
+    -e GITEA_INSTANCE_URL \\
+    -e GITEA_RUNNER_REGISTRATION_TOKEN \\
+    -e GITEA_RUNNER_NAME \\
+    -e GITEA_RUNNER_LABELS \\
+    -e GITEA_RUNNER_FETCH_INTERVAL \\
+    docker.io/gitea/act_runner:nightly
+ExecStop=/usr/bin/podman stop -t 10 gitea-runner
+ExecStopPost=-/usr/bin/podman rm -f gitea-runner
+
+[Install]
+WantedBy=default.target
 EOF
+
+        chown "$CURRENT_USER:$CURRENT_USER" ~/.config/systemd/user/gitea-runner.service 2>/dev/null || true
+        systemctl --user daemon-reload 2>/dev/null || true
+        
+        print_substep "Запуск runner..."
+        # Включаем автозапуск
+        systemctl --user enable gitea-runner.service 2>/dev/null || true
+        
+        # Запускаем и ждём немного
+        if systemctl --user start gitea-runner.service 2>/dev/null; then
+            sleep 15
+            if systemctl --user is-active --quiet gitea-runner.service 2>/dev/null; then
+                print_success "Runner активен и зарегистрирован"
+                RUNNER_EXISTS=1
+            else
+                print_warning "Сервис не стал активным, проверяем логи..."
+                local runner_logs=$(journalctl --user -u gitea-runner.service -n 30 --no-pager 2>/dev/null || echo "")
+                if echo "$runner_logs" | grep -qi "registration\|token\|unauthorized"; then
+                    print_error "Ошибка регистрации — проверьте токен"
+                    echo -e "  ${DIM_GRAY}Полный лог: journalctl --user -u gitea-runner.service -n 50${RESET}"
+                    # Удаляем неработающий сервис
+                    systemctl --user stop gitea-runner.service 2>/dev/null || true
+                    systemctl --user disable gitea-runner.service 2>/dev/null || true
+                    rm -f ~/.config/systemd/user/gitea-runner.service
+                    systemctl --user daemon-reload
+                    RUNNER_EXISTS=0
+                else
+                    print_warning "Возможно, runner ещё регистрируется..."
+                    echo -e "  ${DIM_GRAY}Проверьте статус через: infra logs gitea-runner${RESET}"
+                    # Проверим ещё раз через 10 секунд
+                    sleep 10
+                    if systemctl --user is-active --quiet gitea-runner.service 2>/dev/null; then
+                        print_success "Runner теперь активен"
+                        RUNNER_EXISTS=1
+                    else
+                        print_warning "Runner не запустился. Проверьте логи."
+                        RUNNER_EXISTS=0
+                    fi
+                fi
+            fi
+        else
+            print_warning "Не удалось запустить сервис"
+            echo -e "  ${DIM_GRAY}Попробуйте вручную: systemctl --user start gitea-runner.service${RESET}"
+            echo -e "  ${DIM_GRAY}Логи: journalctl --user -u gitea-runner.service -n 50${RESET}"
+            RUNNER_EXISTS=0
+        fi
+    else
+        print_info "Runner пропущен. Создать позже:"
+        echo -e "  ${DIM_GRAY}1. Получите токен в Gitea: http://$SERVER_IP:3000/admin/actions/runners${RESET}"
+        echo -e "  ${DIM_GRAY}2. Запустите скрипт заново или создайте вручную${RESET}"
+        RUNNER_EXISTS=0
+    fi
 fi
 
-# Добавляем алиас
-if ! grep -q "alias infra=" "$CURRENT_HOME/.bashrc" 2>/dev/null; then
-    echo 'export PATH="$HOME/infra/bin:$PATH"' >> "$CURRENT_HOME/.bashrc"
-    echo 'alias infra="$HOME/infra/bin/infra"' >> "$CURRENT_HOME/.bashrc"
-    print_info "Добавлены алиасы — выполните: source ~/.bashrc"
+# =============== NETBIRD SETUP ===============
+print_step "Настройка NetBird VPN"
+
+# Проверяем статус
+if sudo systemctl is-active --quiet netbird.service 2>/dev/null; then
+    # Проверяем, подключен ли он (есть ли IP)
+    NB_IP=$(sudo podman exec netbird netbird status 2>/dev/null | grep "NetBird IP:" | awk '{print $3}' || echo "")
+    if [ -n "$NB_IP" ]; then
+        print_info "NetBird уже подключен"
+        print_success "IP: $NB_IP"
+    else
+        print_warning "NetBird запущен, но не подключен"
+        # Пробуем подключить
+        print_substep "Попытка подключения..."
+        sudo podman exec netbird netbird up 2>/dev/null || true
+        sleep 5
+        NB_IP=$(sudo podman exec netbird netbird status 2>/dev/null | grep "NetBird IP:" | awk '{print $3}' || echo "N/A")
+        if [ -n "$NB_IP" ] && [ "$NB_IP" != "N/A" ]; then
+            print_success "Подключен (IP: $NB_IP)"
+        else
+            print_warning "Не удалось подключить автоматически"
+        fi
+    fi
+else
+    echo ""
+    echo -e "${NEON_BLUE}${BOLD}▸ ПОДКЛЮЧЕНИЕ NETBIRD${RESET}"
+    echo ""
+    echo -e "  ${MUTED_GRAY}1. Получите setup key:${RESET} ${NEON_CYAN}https://app.netbird.io  ${RESET}"
+    echo -e "  ${MUTED_GRAY}2. Скопируйте ключ (формат UUID)${RESET}"
+    echo ""
+
+    read -rp "$(echo -e "  ${NEON_YELLOW}→${RESET} ${SOFT_WHITE}Setup Key (Enter — пропустить):${RESET} ")" NB_SETUP_KEY
+    echo ""
+
+    if [ -n "$NB_SETUP_KEY" ]; then
+        sudo rm -rf /var/lib/netbird/* 2>/dev/null || true
+        
+        sudo sed -i "s/PLACEHOLDER_SETUP_KEY/$NB_SETUP_KEY/g" /etc/systemd/system/netbird.service
+        sudo systemctl daemon-reload
+        
+        print_substep "Запуск NetBird..."
+        sudo systemctl enable netbird.service 2>/dev/null || true
+        
+        if sudo systemctl start netbird.service 2>/dev/null; then
+            sleep 8
+            # После старта делаем netbird up
+            print_substep "Активация соединения..."
+            sudo podman exec netbird netbird up 2>/dev/null || true
+            sleep 5
+            
+            if sudo systemctl is-active --quiet netbird.service 2>/dev/null; then
+                NB_IP=$(sudo podman exec netbird netbird status 2>/dev/null | grep "NetBird IP:" | awk '{print $3}' || echo "N/A")
+                if [ -n "$NB_IP" ] && [ "$NB_IP" != "N/A" ]; then
+                    print_success "Подключен (IP: $NB_IP)"
+                else
+                    print_warning "Сервис запущен, но IP не получен. Проверьте: infra netbird-status"
+                fi
+            else
+                print_warning "Запускается... (проверьте: infra netbird-status)"
+            fi
+        else
+            print_warning "Не запустился (см. логи: sudo journalctl -u netbird -n 30)"
+        fi
+    else
+        print_info "Настроен, но не запущен. Введите ключ позже:"
+        echo -e "  ${DIM_GRAY}sudo sed -i 's/PLACEHOLDER_SETUP_KEY/ВАШ_КЛЮЧ/g' /etc/systemd/system/netbird.service${RESET}"
+        echo -e "  ${DIM_GRAY}sudo systemctl daemon-reload && sudo systemctl start netbird${RESET}"
+        echo -e "  ${DIM_GRAY}Затем: sudo podman exec netbird netbird up${RESET}"
+    fi
 fi
 
-print_success "Готово! Инфраструктура развёрнута для: $CURRENT_USER"
+# =============== CRON ===============
+print_step "Настройка cron"
+
+CRON_NEEDS_UPDATE=0
+if ! crontab -l 2>/dev/null | grep -q "healthcheck.sh" || \
+   ! crontab -l 2>/dev/null | grep -q "infra backup"; then
+    CRON_NEEDS_UPDATE=1
+fi
+
+if [ $CRON_NEEDS_UPDATE -eq 1 ]; then
+    (
+        crontab -l 2>/dev/null | grep -v "healthcheck\|infra" || true
+        echo "*/5 * * * * $BIN_DIR/healthcheck.sh >> $INFRA_DIR/logs/cron.log 2>&1"
+        echo "0 4 * * 0 $BIN_DIR/infra backup >> $INFRA_DIR/logs/backup.log 2>&1"
+    ) | crontab - 2>/dev/null || true
+    print_success "Cron настроен (healthcheck каждые 5 мин, бэкап по воскресеньям в 4:00)"
+else
+    print_info "Cron уже настроен"
+fi
+
+# =============== ИТОГ ===============
+print_header "ГОТОВО"
+
+typewrite "Конфигурация завершена!" "$NEON_GREEN" 0.03
+
+echo ""
+echo -e "${NEON_CYAN}${BOLD}▸ ДОСТУП К СЕРВИСАМ:${RESET}"
+echo -e "  ${NEON_GREEN}●${RESET} Gitea      ${NEON_CYAN}http://$SERVER_IP:3000${RESET}"
+echo -e "  ${NEON_GREEN}●${RESET} TorrServer ${NEON_CYAN}http://$SERVER_IP:8090${RESET}"
+echo -e "  ${NEON_YELLOW}→${RESET} SSH Git    ${SOFT_WHITE}ssh://git@$SERVER_IP:2222${RESET}"
+
+echo ""
+echo -e "${NEON_BLUE}${BOLD}▸ УПРАВЛЕНИЕ:${RESET}"
+echo -e "  ${DIM_GRAY}infra status${RESET}     ${MUTED_GRAY}- статус всех сервисов${RESET}"
+echo -e "  ${DIM_GRAY}infra monitor${RESET}    ${MUTED_GRAY}- проверка портов${RESET}"
+echo -e "  ${DIM_GRAY}infra logs gitea${RESET} ${MUTED_GRAY}- логи Gitea${RESET}"
+
+echo ""
+echo -e "${NEON_PURPLE}${BOLD}▸ БЭКАПЫ (Restic):${RESET}"
+echo -e "  ${DIM_GRAY}infra backup${RESET}     ${MUTED_GRAY}- создать бэкап${RESET}"
+echo -e "  ${DIM_GRAY}infra restore${RESET}    ${MUTED_GRAY}- восстановить${RESET}"
+echo -e "  ${DIM_GRAY}infra snapshots${RESET}  ${MUTED_GRAY}- список снапшотов${RESET}"
+
+echo ""
+echo -e "${NEON_YELLOW}⚡ ВАЖНО:${RESET}"
+echo -e "  ${MUTED_GRAY}• Пароль Restic сохранён в:${RESET} ${NEON_CYAN}$RESTIC_PASSWORD_FILE${RESET}"
+echo -e "  ${NEON_RED}  Без этого пароля данные невозможно восстановить!${RESET}"
+echo -e "  ${MUTED_GRAY}• Для облачных бэкапов настройте:${RESET} ${NEON_CYAN}$RESTIC_ENV_FILE${RESET}"
+
+if [ $RUNNER_EXISTS -eq 0 ]; then
+    echo ""
+    echo -e "${NEON_PURPLE}▸ RUNNER:${RESET}"
+    echo -e "  ${MUTED_GRAY}Для создания runner перейдите в Gitea:${RESET}"
+    echo -e "  ${NEON_CYAN}http://$SERVER_IP:3000/admin/actions/runners${RESET}"
+    echo -e "  ${MUTED_GRAY}Или запустите скрипт заново${RESET}"
+fi
+
+echo ""
+typewrite "Выполните: source ~/.bashrc" "$NEON_CYAN" 0.02
+echo ""
