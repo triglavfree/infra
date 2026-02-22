@@ -130,7 +130,7 @@ print_success "System сервисы удалены"
 print_header "4. Удаление данных"
 
 print_step "Удаление infra директории..."
-rm -rf "$CURRENT_HOME/infra"
+sudo rm -rf "$CURRENT_HOME/infra"
 print_success "Директория $CURRENT_HOME/infra удалена"
 
 print_step "Удаление NetBird конфигурации..."
