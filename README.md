@@ -107,6 +107,17 @@ chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && sudo service ssh reload
 </details>
 
 <details>
+ 
+ <summary>Обновите Ситему:</summary>
+ 
+```bash
+sudo apt update && sudo apt full-upgrade -y
+```
+
+```bash
+sudo reboot && exit
+```
+</details>
 
 <summary>Подключите флешку:</summary>
 
