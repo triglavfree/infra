@@ -1,9 +1,9 @@
 #!/bin/bash
 set -uo pipefail
 # =============================================================================
-# INFRASTRUCTURE v9.2.1
+# INFRASTRUCTURE v9.2.2
 # =============================================================================
-# Исправлено: Цвета в heredoc, проверка cron, создание cache директории, обработка ошибок
+# Исправлено: Ширина box с учетом цветов, дефолтный путь для локального бэкапа
 # =============================================================================
 
 NEON_CYAN='\033[38;5;81m'
@@ -49,7 +49,7 @@ fi
 CURRENT_HOME="$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-print_header "INFRASTRUCTURE v9.2.1"
+print_header "INFRASTRUCTURE v9.2.2"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
 # =============== КАТАЛОГИ С ПРАВАМИ ===============
@@ -104,7 +104,6 @@ fi
 sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || true
 
 # =============== CLI ===============
-# Используем printf для корректной обработки escape-последовательностей
 printf '%s' '#!/bin/bash
 INFRA_DIR="$HOME/infra"
 VOLUMES_DIR="$INFRA_DIR/volumes"
@@ -130,12 +129,29 @@ ICON_WARN="${NEON_YELLOW}●${RESET}"
 ICON_INFO="${NEON_BLUE}●${RESET}"
 ICON_ARROW="▸"
 
+# Функция для вычисления видимой длины строки (без escape-последовательностей)
+visible_length() {
+    local str="$1"
+    # Удаляем все escape-последовательности
+    echo -n "$str" | sed '\''s/\x1b\[[0-9;]*m//g'\'' | wc -c
+}
+
 print_box() {
-    local title="$1" width=50
+    local title="$1"
+    local time_str="$(date +%H:%M:%S)"
+    local full_title="${title} ${time_str}"
+    local width=50
+    
+    # Вычисляем видимую длину
+    local vis_len=$(visible_length "$full_title")
+    local padding=$((width - vis_len))
+    [ $padding -lt 0 ] && padding=0
+    
     local line=$(printf '\''═%.0s'\'' $(seq 1 $width))
+    
     echo ""
     echo -e "${NEON_CYAN}╔${line}╗${RESET}"
-    printf "${NEON_CYAN}║${RESET} ${BOLD}%-${width}s${RESET}${NEON_CYAN}║${RESET}\n" "$title"
+    printf "${NEON_CYAN}║${RESET} ${BOLD}%s${RESET}%*s${NEON_CYAN}║${RESET}\n" "$full_title" "$padding" " "
     echo -e "${NEON_CYAN}╚${line}╝${RESET}"
 }
 
@@ -214,7 +230,7 @@ get_service_status() {
 
 status_cmd() {
     clear
-    print_box "INFRASTRUCTURE STATUS $(date+%H:%M:%S)"
+    print_box "INFRASTRUCTURE STATUS"
     
     # === ROOTLESS SERVICES ===
     print_section "Rootless Services (User: $USER)"
@@ -382,7 +398,7 @@ case "${1:-status}" in
             
             echo ""
             echo -e "${NEON_GREEN}${BOLD}╔════════════════════════════════════════════════╗${RESET}"
-            echo -e "${NEON_GREEN}${BOLD}║     ИНФРАСТРУКТУРА ПОЛНОСТЬЮ УДАЛЕНА           ║${RESET}"
+            echo -e "${NEON_GREEN}${BOLD}║     ИНФРАСТРУКТУРА ПОЛНОСТЬЮ УДАЛЕНА          ║${RESET}"
             echo -e "${NEON_GREEN}${BOLD}╚════════════════════════════════════════════════╝${RESET}"
         else
             echo -e "${NEON_YELLOW}Отменено${RESET}"
@@ -448,29 +464,42 @@ case "${1:-status}" in
         read -rp "  Backend [1-4]: " BACKEND_TYPE
         
         case "$BACKEND_TYPE" in
-            1) read -rp "  Путь для бэкапов (например, /mnt/backup): " REPO_PATH
-               REPO="local:$REPO_PATH" ;;
-            2) read -rp "  SFTP адрес (user@host:/path): " REPO_PATH
-               REPO="sftp:$REPO_PATH" ;;
-            3) read -rp "  S3 endpoint (s3:host:port/bucket): " REPO_PATH
-               REPO="$REPO_PATH"
-               read -rp "  AWS_ACCESS_KEY_ID: " AWS_KEY
-               read -rp "  AWS_SECRET_ACCESS_KEY: " AWS_SECRET ;;
-            4) read -rp "  rclone remote (rclone:remote:path): " REPO_PATH
-               REPO="$REPO_PATH" ;;
-            *) echo -e "  ${ICON_FAIL} Неверный выбор"; exit 1 ;;
+            1) 
+                read -rp "  Путь для бэкапов [по умолчанию: /backup/infra]: " REPO_PATH
+                # Дефолтное значение если пустой ввод
+                REPO_PATH="${REPO_PATH:-/backup/infra}"
+                REPO="local:$REPO_PATH" 
+                ;;
+            2) 
+                read -rp "  SFTP адрес (user@host:/path): " REPO_PATH
+                REPO="sftp:$REPO_PATH" 
+                ;;
+            3) 
+                read -rp "  S3 endpoint (s3:host:port/bucket): " REPO_PATH
+                REPO="$REPO_PATH"
+                read -rp "  AWS_ACCESS_KEY_ID: " AWS_KEY
+                read -rp "  AWS_SECRET_ACCESS_KEY: " AWS_SECRET 
+                ;;
+            4) 
+                read -rp "  rclone remote (rclone:remote:path): " REPO_PATH
+                REPO="$REPO_PATH" 
+                ;;
+            *) 
+                echo -e "  ${ICON_FAIL} Неверный выбор" 
+                exit 1 
+                ;;
         esac
         
         read -rsp "  Пароль для шифрования бэкапов: " RESTIC_PASS
         echo ""
         
         # Проверка и дефолтное значение для cron
-        read -rp "  Время автобэкапа (cron, по умолчанию '0 2 * * *' - каждый день в 2:00): " CRON_TIME
+        read -rp "  Время автобэкапа [по умолчанию: 0 2 * * *]: " CRON_TIME
         CRON_TIME="${CRON_TIME:-0 2 * * *}"
         
         # Валидация cron (простая проверка на 5 полей)
         if [ $(echo "$CRON_TIME" | wc -w) -ne 5 ]; then
-            echo -e "  ${ICON_FAIL} ${NEON_RED}Неверный формат cron. Используется значение по умолчанию: 0 2 * * *${RESET}"
+            echo -e "  ${ICON_WARN} Неверный формат cron. Используется значение по умолчанию: 0 2 * * *"
             CRON_TIME="0 2 * * *"
         fi
         
@@ -486,6 +515,16 @@ EOENV
         [ -n "${AWS_SECRET:-}" ] && echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET" >> "$INFRA_DIR/.backup_env"
         chmod 600 "$INFRA_DIR/.backup_env"
         
+        # Создаём директорию для локального бэкапа если нужно
+        if [[ "$REPO" == local:* ]]; then
+            LOCAL_PATH="${REPO#local:}"
+            if [ ! -d "$LOCAL_PATH" ]; then
+                echo -e "  ${NEON_CYAN}▸ Создание директории $LOCAL_PATH...${RESET}"
+                sudo mkdir -p "$LOCAL_PATH"
+                sudo chown "$USER:$USER" "$LOCAL_PATH" 2>/dev/null || true
+            fi
+        fi
+        
         # Инициализация репозитория
         echo -e "  ${NEON_CYAN}▸ Инициализация репозитория...${RESET}"
         if podman run --rm \
@@ -494,6 +533,7 @@ EOENV
             ${AWS_KEY:+-e AWS_ACCESS_KEY_ID="$AWS_KEY"} \
             ${AWS_SECRET:+-e AWS_SECRET_ACCESS_KEY="$AWS_SECRET"} \
             -v "$BACKUP_DIR/cache:/cache" \
+            ${LOCAL_PATH:+-v "$LOCAL_PATH:$LOCAL_PATH:Z"} \
             docker.io/restic/restic:latest \
             init --cache-dir=/cache 2>/dev/null; then
             
@@ -508,6 +548,7 @@ EOENV
         ( crontab -l 2>/dev/null | grep -v "infra backup" || true; echo "$CRON_TIME $INFRA_DIR/bin/infra backup >> $INFRA_DIR/logs/backup.log 2>&1" ) | crontab -
         
         echo -e "  ${ICON_OK} ${NEON_GREEN}Бэкап настроен${RESET}"
+        echo -e "  ${MUTED_GRAY}Репозиторий: $REPO${RESET}"
         echo -e "  ${MUTED_GRAY}Расписание: $CRON_TIME${RESET}"
         echo -e "  ${MUTED_GRAY}Тест: infra backup${RESET}"
         ;;
@@ -545,7 +586,7 @@ EOENV
             snapshots --cache-dir=/cache
         
         echo ""
-        read -rp "  ID снапшота (latest - последний): " SNAP_ID
+        read -rp "  ID снапшота [по умолчанию: latest]: " SNAP_ID
         SNAP_ID="${SNAP_ID:-latest}"
         read -rp "  Куда восстановить [$INFRA_DIR]: " TARGET
         TARGET="${TARGET:-$INFRA_DIR}"
