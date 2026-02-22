@@ -398,7 +398,7 @@ case "${1:-status}" in
             
             echo ""
             echo -e "${NEON_GREEN}${BOLD}╔════════════════════════════════════════════════╗${RESET}"
-            echo -e "${NEON_GREEN}${BOLD}║     ИНФРАСТРУКТУРА ПОЛНОСТЬЮ УДАЛЕНА          ║${RESET}"
+            echo -e "${NEON_GREEN}${BOLD}║     ИНФРАСТРУКТУРА ПОЛНОСТЬЮ УДАЛЕНА           ║${RESET}"
             echo -e "${NEON_GREEN}${BOLD}╚════════════════════════════════════════════════╝${RESET}"
         else
             echo -e "${NEON_YELLOW}Отменено${RESET}"
