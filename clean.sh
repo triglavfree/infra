@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # =============================================================================
-# INFRASTRUCTURE CLEANUP v1.1
+# INFRASTRUCTURE CLEANUP v1.2
 # =============================================================================
 # Полная очистка без переустановки Ubuntu Server 24.04
-# Включает удаление самого скрипта cleanup по завершении
+# Исправлено: sudo для удаления защищённых директорий
 # =============================================================================
 
 NEON_RED='\033[38;5;203m'
@@ -37,7 +37,7 @@ CURRENT_UID=$(id -u "$CURRENT_USER")
 
 echo ""
 echo -e "${NEON_RED}${BOLD}╔════════════════════════════════════════════════╗${RESET}"
-echo -e "${NEON_RED}${BOLD}║     INFRASTRUCTURE CLEANUP v1.1                ║${RESET}"
+echo -e "${NEON_RED}${BOLD}║     INFRASTRUCTURE CLEANUP v1.2                ║${RESET}"
 echo -e "${NEON_RED}${BOLD}╚════════════════════════════════════════════════╝${RESET}"
 echo ""
 
@@ -53,7 +53,7 @@ echo -e "  • CLI утилиту 'infra' и alias 'i'"
 echo -e "  • Restic репозиторий и пароли"
 echo -e "  • UFW правила (будут сброшены)"
 echo -e "  • Настройки sysctl и модули ядра"
-echo -e "  • Скрипт infra.sh"
+echo -e "  • ${NEON_RED}Скрипт infra.sh ($SCRIPT_NAME)${RESET}"
 echo ""
 echo -e "${NEON_YELLOW}⚠ СОХРАНЯТСЯ:${RESET}"
 echo -e "  • Установленные пакеты (podman, ufw и т.д.)"
@@ -113,10 +113,10 @@ print_header "3. Удаление systemd сервисов"
 
 # User сервисы
 print_step "Удаление user сервисов..."
-sudo rm -f ~/.config/systemd/user/gitea.service
-sudo rm -f ~/.config/systemd/user/gitea-runner.service
-sudo rm -f ~/.config/systemd/user/torrserver.service
-sudo rm -f ~/.config/containers/systemd/*.container 2>/dev/null || true
+rm -f ~/.config/systemd/user/gitea.service
+rm -f ~/.config/systemd/user/gitea-runner.service
+rm -f ~/.config/systemd/user/torrserver.service
+rm -f ~/.config/containers/systemd/*.container 2>/dev/null || true
 systemctl --user daemon-reload 2>/dev/null || true
 print_success "User сервисы удалены"
 
@@ -129,7 +129,8 @@ print_success "System сервисы удалены"
 # =============== 4. УДАЛЕНИЕ ДИРЕКТОРИЙ ===============
 print_header "4. Удаление данных"
 
-print_step "Удаление infra директории..."
+print_step "Удаление infra директории (с sudo)..."
+# Используем sudo для удаления файлов с разными UID/GID от контейнеров
 sudo rm -rf "$CURRENT_HOME/infra"
 print_success "Директория $CURRENT_HOME/infra удалена"
 
@@ -218,7 +219,7 @@ echo -e "  ${NEON_GREEN}✓${RESET} Cron задачи"
 echo -e "  ${NEON_GREEN}✓${RESET} CLI утилита 'infra'"
 echo -e "  ${NEON_GREEN}✓${RESET} Restic репозиторий и бэкапы"
 echo -e "  ${NEON_GREEN}✓${RESET} UFW правила"
-echo -e "  ${NEON_GREEN}✓${RESET} Скрипт infra.sh"
+echo -e "  ${NEON_GREEN}✓${RESET} Cкрипт infra.sh"
 echo ""
 
 echo -e "${NEON_YELLOW}⚠ Что осталось (не тронуто):${RESET}"
