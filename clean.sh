@@ -113,10 +113,10 @@ print_header "3. Удаление systemd сервисов"
 
 # User сервисы
 print_step "Удаление user сервисов..."
-rm -f ~/.config/systemd/user/gitea.service
-rm -f ~/.config/systemd/user/gitea-runner.service
-rm -f ~/.config/systemd/user/torrserver.service
-rm -f ~/.config/containers/systemd/*.container 2>/dev/null || true
+sudo rm -f ~/.config/systemd/user/gitea.service
+sudo rm -f ~/.config/systemd/user/gitea-runner.service
+sudo rm -f ~/.config/systemd/user/torrserver.service
+sudo rm -f ~/.config/containers/systemd/*.container 2>/dev/null || true
 systemctl --user daemon-reload 2>/dev/null || true
 print_success "User сервисы удалены"
 
