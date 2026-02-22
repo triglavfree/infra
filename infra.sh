@@ -1,9 +1,9 @@
 #!/bin/bash
 set -uo pipefail
 # =============================================================================
-# INFRASTRUCTURE v9.2.6
+# INFRASTRUCTURE v9.2.8
 # =============================================================================
-# Исправлено: local вне функций, SSH порт, URL TorrServer, пустой mount
+# Добавлено: BBR, динамический swap, исправлен парсинг снапшотов
 # =============================================================================
 
 # Цвета через tput (более надежный способ)
@@ -80,7 +80,7 @@ fi
 CURRENT_HOME="$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-print_header "INFRASTRUCTURE v9.2.6"
+print_header "INFRASTRUCTURE v9.2.8"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
 # =============== КАТАЛОГИ С ПРАВАМИ ===============
@@ -106,28 +106,67 @@ print_success "Директории созданы с правами $CURRENT_US
 print_step "Подготовка системы"
 
 if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
+    print_info "Настройка системы..."
+    
+    # Расчет swap = RAM * 2, но не более 8GB
+    RAM_MB=$(free -m | awk '/^Mem:/ {print $2}')
+    SWAP_MB=$((RAM_MB * 2))
+    if [ $SWAP_MB -gt 8192 ]; then SWAP_MB=8192; fi
+    
     sudo bash -c "
-        modprobe wireguard 2>/dev/null || true
-        echo wireguard > /etc/modules-load.d/wireguard.conf 2>/dev/null || true
-        sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
-        
+        # Обновление системы
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq >/dev/null 2>&1
+        apt-get upgrade -y -qq >/dev/null 2>&1 || true
+        
+        # Установка необходимых пакетов
         apt-get install -y -qq podman podman-docker uidmap slirp4netns fuse-overlayfs curl openssl >/dev/null 2>&1 || true
         
+        # Настройка swap
+        if [ ! -f /swapfile ] && [ \$(free | grep -c Swap) -eq 0 ] || [ \$(free | awk '/^Swap:/ {print \$2}') -eq 0 ]; then
+            fallocate -l ${SWAP_MB}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=${SWAP_MB} 2>/dev/null
+            chmod 600 /swapfile
+            mkswap /swapfile >/dev/null 2>&1
+            swapon /swapfile >/dev/null 2>&1
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            sysctl vm.swappiness=10 >/dev/null 2>&1
+            echo 'vm.swappiness=10' >> /etc/sysctl.conf
+        fi
+        
+        # Включение BBR
+        if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
+            echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
+            echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
+            sysctl -p >/dev/null 2>&1
+        fi
+        
+        # Оптимизация сети
+        echo 'net.ipv4.tcp_fastopen=3' >> /etc/sysctl.conf
+        echo 'net.ipv4.tcp_tw_reuse=1' >> /etc/sysctl.conf
+        echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+        
+        # WireGuard
+        modprobe wireguard 2>/dev/null || true
+        echo wireguard > /etc/modules-load.d/wireguard.conf 2>/dev/null || true
+        
+        # Настройка subuid/subgid для rootless
         if ! grep -q '$CURRENT_USER:' /etc/subuid 2>/dev/null; then
             usermod --add-subuids 100000-165535 --add-subgids 100000-165535 '$CURRENT_USER' 2>/dev/null || true
         fi
         
+        # Создание runtime директории
         mkdir -p /run/user/$CURRENT_UID
         chown $CURRENT_USER:$CURRENT_USER /run/user/$CURRENT_UID
         chmod 700 /run/user/$CURRENT_UID
         
+        # Директории для rootful сервисов
         mkdir -p /var/lib/gitea-runner /var/lib/netbird
         chmod 755 /var/lib/gitea-runner /var/lib/netbird
     "
+    
     touch "$INFRA_DIR/.bootstrap_done"
-    print_success "Система настроена"
+    print_success "Система настроена (swap: ${SWAP_MB}MB, BBR: enabled)"
 else
     print_info "Bootstrap уже выполнен"
 fi
@@ -244,6 +283,17 @@ get_service_status() {
     fi
 }
 
+get_disk_type() {
+    local disk=$1
+    local disk_type="unknown"
+    if [[ "$disk" == *"nvme"* ]]; then disk_type="NVMe"
+    elif [ -f "/sys/block/$(basename $disk)/queue/rotational" ]; then
+        local rotational=$(cat "/sys/block/$(basename $disk)/queue/rotational" 2>/dev/null || echo "1")
+        if [ "$rotational" = "0" ]; then disk_type="SSD"; else disk_type="HDD"; fi
+    fi
+    echo "$disk_type"
+}
+
 status_cmd() {
     clear
     print_box "INFRASTRUCTURE STATUS"
@@ -256,7 +306,6 @@ status_cmd() {
     if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^gitea$"; then
         local gitea_port=$(podman port gitea 2>/dev/null | grep "3000/tcp" | cut -d: -f2 || echo "3000")
         local gitea_ssh=$(podman port gitea 2>/dev/null | grep "2222/tcp" | cut -d: -f2 || echo "2222")
-        # Если SSH порт не найден, показываем только HTTP
         if [ -n "$gitea_ssh" ]; then
             print_metric "" "${MUTED_GRAY}http://${server_ip}:${gitea_port} | ssh://${server_ip}:${gitea_ssh}${RESET}"
         else
@@ -267,8 +316,7 @@ status_cmd() {
     local torr_svc=$(get_service_status "torrserver" "user")
     local torr_ctr=$(get_container_status "torrserver" "user")
     print_metric "TorrServer" "$torr_svc $torr_ctr"
-    # Показываем URL даже если контейнер не запущен, но сервис активен
-    if systemctl --user is-active --quiet torrserver 2>/dev/null || podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^torrserver$"; then
+    if systemctl --user is-active --quiet torrserver 2>/dev/null || podman ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^torrserver$"; then
         local torr_port=$(podman port torrserver 2>/dev/null | grep "8090/tcp" | cut -d: -f2 || echo "8090")
         print_metric "" "${MUTED_GRAY}http://${server_ip}:${torr_port}${RESET}"
     fi
@@ -291,10 +339,22 @@ status_cmd() {
     fi
     
     print_section "Resources"
-    local disk_usage=$(df -h "$INFRA_DIR" 2>/dev/null | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}' || echo "N/A")
-    print_metric "Disk" "$disk_usage"
-    local mem_info=$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}' || echo "N/A")
+    local disk_info=$(df -h "$INFRA_DIR" 2>/dev/null | tail -1)
+    local disk_usage=$(echo "$disk_info" | awk '{print $3 "/" $2 " (" $5 ")"}')
+    local disk_dev=$(echo "$disk_info" | awk '{print $1}' | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+    local disk_type=$(get_disk_type "$disk_dev")
+    print_metric "Disk" "$disk_usage ${NEON_CYAN}[${disk_type}]${RESET}"
+    
+    local mem_info=$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}')
     print_metric "Memory" "$mem_info"
+    
+    local swap_info=$(free -h 2>/dev/null | awk '/^Swap:/ {if ($2 != "0B" && $2 != "0") print $3 "/" $2; else print "disabled"}')
+    print_metric "Swap" "$swap_info"
+    
+    local bbr_status=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -o 'bbr' || echo "off")
+    if [ "$bbr_status" = "bbr" ]; then print_metric "BBR" "${NEON_GREEN}enabled${RESET}"
+    else print_metric "BBR" "${DIM_GRAY}disabled${RESET}"; fi
+    
     local ctr_count=$(podman ps -q 2>/dev/null | wc -l)
     local ctr_total=$(podman ps -aq 2>/dev/null | wc -l)
     local root_ctr_count=$(sudo podman ps -q 2>/dev/null | wc -l)
@@ -305,14 +365,22 @@ status_cmd() {
     if [ -f "$INFRA_DIR/.backup_configured" ]; then
         local last_backup="never"
         if [ -f "$INFRA_DIR/logs/backup.log" ]; then
-            last_backup=$(grep "Бэкап завершён" "$INFRA_DIR/logs/backup.log" 2>/dev/null | tail -1 | awk '{print $1 " " $2}' || echo "never")
+            # Ищем строку с датой вида YYYY-MM-DD HH:MM:SS перед "saved"
+            last_backup=$(grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" "$INFRA_DIR/logs/backup.log" 2>/dev/null | grep "saved" | tail -1 | awk '{print $1 " " $2}' || echo "never")
             [ -z "$last_backup" ] && last_backup="never"
         fi
+        
         local backup_count=0
         if [ -f "$INFRA_DIR/.backup_env" ]; then
             source "$INFRA_DIR/.backup_env"
-            backup_count=$(podman run --rm -e RESTIC_REPOSITORY="$RESTIC_REPOSITORY" -e RESTIC_PASSWORD="$RESTIC_PASSWORD" -v "$BACKUP_DIR/cache:/cache" docker.io/restic/restic:latest snapshots --cache-dir=/cache 2>/dev/null | grep -c "^[0-9a-f]" || echo "0")
+            # Получаем количество снапшотов напрямую из restic
+            backup_count=$(podman run --rm -e RESTIC_REPOSITORY="$RESTIC_REPOSITORY" -e RESTIC_PASSWORD="$RESTIC_PASSWORD" -v "$BACKUP_DIR/cache:/cache" docker.io/restic/restic:latest snapshots --cache-dir=/cache --json 2>/dev/null | grep -c '"time"' || echo "0")
+            # Если json не работает, пробуем обычный вывод
+            if [ "$backup_count" = "0" ]; then
+                backup_count=$(podman run --rm -e RESTIC_REPOSITORY="$RESTIC_REPOSITORY" -e RESTIC_PASSWORD="$RESTIC_PASSWORD" -v "$BACKUP_DIR/cache:/cache" docker.io/restic/restic:latest snapshots --cache-dir=/cache 2>/dev/null | grep -E "^[0-9a-f]{8}" | wc -l || echo "0")
+            fi
         fi
+        
         print_metric "Status" "${ICON_OK} ${NEON_GREEN}configured${RESET}"
         print_metric "Last" "$last_backup"
         print_metric "Snapshots" "$backup_count"
@@ -419,7 +487,6 @@ case "${1:-status}" in
         SNAPSHOT="$BACKUP_DIR/snapshots/infra-$(date +%Y%m%d-%H%M%S).tar.gz"
         tar -czf "$SNAPSHOT" -C "$VOLUMES_DIR" . 2>/dev/null || true
         
-        # Формируем mount для локального репозитория
         extra_mounts=""
         if [[ "$RESTIC_REPOSITORY" == local:* ]]; then
             local_path="${RESTIC_REPOSITORY#local:}"
@@ -444,7 +511,6 @@ case "${1:-status}" in
         fi
         ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
         
-        # Формируем mount для forget
         forget_mounts=""
         if [[ "$RESTIC_REPOSITORY" == local:* ]]; then
             forget_local_path="${RESTIC_REPOSITORY#local:}"
@@ -462,7 +528,7 @@ case "${1:-status}" in
             ${forget_mounts} \
             docker.io/restic/restic:latest \
             forget --keep-daily 7 --prune --cache-dir=/cache 2>/dev/null || true
-        echo -e "  ${ICON_OK} ${NEON_GREEN}Бэкап завершён${RESET}"
+        echo -e "  ${ICON_OK} ${NEON_GREEN}Backup completed${RESET}"
         ;;
     backup-setup)
         echo -e "${NEON_CYAN}▸ Настройка бэкапов (Restic)${RESET}"
@@ -791,6 +857,17 @@ fi
 # =============== CRON ===============
 print_step "Настройка cron"
 ( crontab -l 2>/dev/null | grep -v "infra" || true; echo "*/5 * * * * $BIN_DIR/infra status > /dev/null 2>&1 || true" ) | crontab - 2>/dev/null || true
+
+# =============== САМОУДАЛЕНИЕ ===============
+print_step "Завершение установки"
+
+# Удаляем сам скрипт если он существует и не является уже установленным infra
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+if [ -f "$SCRIPT_PATH" ] && [ "$SCRIPT_PATH" != "$BIN_DIR/infra" ] && [ "$SCRIPT_PATH" != "/usr/local/bin/infra" ]; then
+    print_info "Удаление установочного скрипта..."
+    rm -f "$SCRIPT_PATH"
+    print_success "Скрипт удалён"
+fi
 
 # =============== ИТОГ ===============
 print_header "ГОТОВО"
