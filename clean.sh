@@ -34,7 +34,7 @@ CURRENT_UID=$(id -u "$CURRENT_USER")
 
 echo ""
 echo -e "${NEON_RED}${BOLD}╔════════════════════════════════════════════════╗${RESET}"
-echo -e "${NEON_RED}${BOLD}║     INFRASTRUCTURE CLEANUP v1.2                ║${RESET}"
+echo -e "${NEON_RED}${BOLD}║     INFRASTRUCTURE CLEANUP v1.3                ║${RESET}"
 echo -e "${NEON_RED}${BOLD}╚════════════════════════════════════════════════╝${RESET}"
 echo ""
 
