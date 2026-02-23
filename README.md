@@ -1,7 +1,9 @@
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Podman](https://img.shields.io/badge/podman-4.0+-blue.svg)](https://podman.io)
-[![Gitea](https://img.shields.io/badge/gitea-latest-orange.svg)](https://gitea.io)
-[![TorrServer](https://img.shields.io/badge/torrserver-MatriX.139-red.svg)](https://github.com/YouROK/TorrServer)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu_Server-24.04.4_LTS-E95420?style=flat-square&logo=ubuntu)](https://ubuntu.com/download/server)
+[![NetBird](https://img.shields.io/badge/NetBird-0.60.0-0066FF?style=flat-square&logo=netbird)](https://github.com/netbirdio/netbird/releases/latest)
+[![TorrServer](https://img.shields.io/badge/TorrServer-MatriX.139-FF6B6B?style=flat-square&logo=webtorrent)](https://github.com/YouROK/TorrServer/releases/latest)
+[![Podman](https://img.shields.io/badge/Podman-4.0+-892CA0?style=flat-square&logo=podman)](https://podman.io/)
+[![Gitea](https://img.shields.io/badge/Gitea-latest-609926?style=flat-square&logo=gitea)](https://github.com/go-gitea/gitea/releases/latest)
+
 ---
 ### ⚡ Быстрый старт (автономное развёртывание с флешки)
 
