@@ -125,21 +125,6 @@ infra restore-local
 ```
 > 💡 Команда `infra` доступна сразу после развёртывания (добавлена в `~/.bashrc`).
 
-### 🩺 Мониторинг и уведомления
-
-Инфраструктура включает встроенный механизм healthcheck, который запускается каждые 5 минут через `cron`:
-
-- Проверяет доступность всех основных сервисов (Gitea, Vaultwarden, AdGuard Home, TorrServer)
-- Проверяет сетевое состояние (WireGuard, SSH)
-- Отправляет уведомления в Telegram при сбоях (опционально)
-- Логирует результаты в `~/infra/logs/healthcheck.log`
-
-Для настройки уведомлений задайте переменные окружения:
-```bash
-export TELEGRAM_BOT_TOKEN="ваш_токен_бота"
-export TELEGRAM_CHAT_ID="ваш_chat_id"
-```
-
 📚 Ресурсы 
 
 [Quadlets (Podman)](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html?spm=a2ty_o01.29997173.0.0.213551718a05nT) \
