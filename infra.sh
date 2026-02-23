@@ -685,15 +685,45 @@ case "${1:-status}" in
         backup_time=$(date "+%Y-%m-%d %H:%M:%S")
         echo -e "${NEON_CYAN}▸ Создание бэкапа ${backup_time}...${RESET}"
         
-        # Создаем локальный архив volumes
+        # =============== ЛОКАЛЬНЫЙ АРХИВ ЧЕРЕЗ PODMAN ===============
+        echo -e "  ${NEON_CYAN}▸ Создание локального архива через Podman...${RESET}"
+        
         SNAPSHOT="$BACKUP_DIR/snapshots/infra-$(date +%Y%m%d-%H%M%S).tar.gz"
-        if tar -czf "$SNAPSHOT" -C "$VOLUMES_DIR" . 2>/dev/null; then
-            echo "$backup_time - Local backup created: $(basename $SNAPSHOT)" >> "$INFRA_DIR/logs/backup.log"
-            echo -e "  ${ICON_OK} Локальный архив создан: $(basename $SNAPSHOT)"
+        
+        # Проверяем, есть ли что бэкапить
+        if ! podman run --rm -v "$VOLUMES_DIR:/data:ro" docker.io/library/alpine:latest ls -A /data | grep -q .; then
+            echo -e "  ${ICON_WARN} Директория volumes пуста, локальный архив не создан"
         else
-            echo -e "  ${ICON_WARN} Ошибка создания локального архива"
+            # Запускаем временный контейнер alpine для создания архива
+            if podman run --rm \
+                -v "$VOLUMES_DIR:/data:ro" \
+                -v "$BACKUP_DIR/snapshots:/backup:Z" \
+                docker.io/library/alpine:latest \
+                tar -czf "/backup/$(basename $SNAPSHOT)" -C /data . 2>&1 | tee -a "$INFRA_DIR/logs/backup_error.log"; then
+                
+                # Исправляем права на архив (после создания он принадлежит root)
+                sudo chown $USER:$USER "$SNAPSHOT" 2>/dev/null || true
+                
+                # Получаем размер архива
+                SIZE=$(du -h "$SNAPSHOT" 2>/dev/null | cut -f1)
+                [ -z "$SIZE" ] && SIZE="unknown"
+                
+                # Записываем в лог
+                echo "$backup_time - Local backup created: $(basename $SNAPSHOT) ($SIZE)" >> "$INFRA_DIR/logs/backup.log"
+                echo -e "  ${ICON_OK} Локальный архив создан: $(basename $SNAPSHOT) (${SIZE})"
+                
+                # Показываем первые несколько файлов в архиве
+                FILE_COUNT=$(podman run --rm -v "$BACKUP_DIR/snapshots:/backup:ro" docker.io/library/alpine:latest tar -tzf "/backup/$(basename $SNAPSHOT)" 2>/dev/null | wc -l)
+                echo -e "  ${ICON_INFO} В архиве файлов: $FILE_COUNT"
+            else
+                echo -e "  ${ICON_FAIL} ${NEON_RED}Ошибка создания локального архива${RESET}"
+                echo -e "  ${ICON_INFO} Проверьте логи: $INFRA_DIR/logs/backup_error.log"
+            fi
         fi
-
+        
+        # =============== RESTIC БЭКАП ===============
+        echo -e "  ${NEON_CYAN}▸ Создание Restic бэкапа...${RESET}"
+        
         extra_mounts=""
         if [[ "$RESTIC_REPOSITORY" == local:* ]]; then
             local_path="${RESTIC_REPOSITORY#local:}"
@@ -717,9 +747,22 @@ case "${1:-status}" in
             echo -e "  ${ICON_OK} ${NEON_GREEN}Restic backup completed${RESET}"
         fi
         
+        # =============== ОЧИСТКА СТАРЫХ АРХИВОВ ===============
         # Очищаем старые локальные архивы (оставляем последние 7)
-        ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm -f
+        echo -e "  ${NEON_CYAN}▸ Очистка старых локальных архивов...${RESET}"
+        if ls "$BACKUP_DIR/snapshots"/*.tar.gz 1>/dev/null 2>&1; then
+            OLD_COUNT=$(ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | wc -l)
+            ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm -f
+            NEW_COUNT=$(ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | wc -l)
+            REMOVED=$((OLD_COUNT - NEW_COUNT))
+            [ $REMOVED -gt 0 ] && echo -e "  ${ICON_INFO} Удалено старых архивов: $REMOVED, осталось: $NEW_COUNT"
+        else
+            echo -e "  ${ICON_INFO} Нет локальных архивов для очистки"
+        fi
 
+        # =============== ОЧИСТКА RESTIC СНАПШОТОВ ===============
+        echo -e "  ${NEON_CYAN}▸ Очистка старых restic снапшотов...${RESET}"
+        
         forget_mounts=""
         if [[ "$RESTIC_REPOSITORY" == local:* ]]; then
             forget_local_path="${RESTIC_REPOSITORY#local:}"
@@ -737,6 +780,8 @@ case "${1:-status}" in
             ${forget_mounts} \
             docker.io/restic/restic:latest \
             forget --keep-daily 7 --prune --cache-dir=/cache 2>/dev/null || true
+            
+        echo -e "  ${ICON_OK} ${NEON_GREEN}Бэкап завершён${RESET}"
         ;;
     backup-setup)
         echo -e "${NEON_CYAN}▸ Настройка бэкапов (Restic)${RESET}"
