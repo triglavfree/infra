@@ -29,41 +29,7 @@
 |Безопасность по умолчанию|Пароли в SSH отключаются только после проверки ключей, UFW + Fail2Ban, WireGuard VPN|
 |Минимализм|Только необходимые сервисы без телеметрии и проприетарных компонентов|
 
-### 📦 Структура проекта
-```txt
-infra/
-├── bootstrap/
-│   ├── bootstrap.sh                # Идемпотентная настройка хоста
-│   └── common.sh                   # Цветное логирование
-├── bin/
-│   └── infra                       # Единая CLI: infra install|backup|restore|status|logs
-├── containers/
-│   ├── caddy.container             # Reverse proxy + HTTPS (порты 80/443)
-│   ├── gitea.container             # Git-сервер с включёнными Actions (порт 3000)
-│   ├── gitea-runner.container      # CI/CD раннер для Gitea Actions
-│   ├── vaultwarden.container       # Менеджер паролей (Rust, без телеметрии) (порт 8081)
-│   ├── torrserver.container        # Стриминг торрентов (ghcr.io/yourok/torrserver) (порт 8090)
-│   ├── adguardhome.container       # Блокировка рекламы и DNS-фильтрация (порт 3001, 53/UDP)
-│   ├── dozzle.container            # Логи контейнеров (единственный с podman.sock) (порт 9999)
-│   ├── restic.container            # Автоматические облачные бэкапы (таймер systemd)
-│   └── restic.timer                # Таймер для регулярного запуска бэкапов
-├── volumes/                        # Данные сервисов:
-│   ├── caddy/                      # TLS-сертификаты
-│   ├── gitea/                      # Репозитории + БД SQLite
-│   ├── gitea-runner/               # Конфигурация раннера
-│   ├── vaultwarden/                # База паролей
-│   ├── torrserver/                 # Торренты + медиа-кэш
-│   ├── adguardhome/                # Конфигурация AdGuard Home
-│   └── restic/                     # Конфигурация Restic для бэкапов
-├── docs/
-│   └── recovery.md                 # Пошаговая инструкция восстановления с нуля
-├── secrets/                        # Секреты и конфигурации (700 права доступа)
-├── backups/                        # ЗАШИФРОВАННЫЕ БЭКАПЫ (только .tar.gz.gpg файлы)
-│   └── infra-backup.tar.gz.gpg     # Пример архива
-├── logs/                           # Логи инфраструктуры
-├── README.md                       # Справка
-└── LICENSE                         # MIT — полностью открытый шаблон
-```
+
 ### ⚡ Быстрый старт (автономное развёртывание с флешки)
 
 <details>
