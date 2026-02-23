@@ -84,12 +84,8 @@ sudo umount /mnt/usb
 1. Подключитесь к серверу по SSH как пользователь
 2. Скопируйте скрипт с флешки (пример для /media/usb)
 ```bash
-cp /media/usb/infra.sh ~/
-chmod +x infra.sh
-```
-3. Запустите развёртывание 🚀
-```bash
-./infra.sh
+# Скачать и сразу выполнить в bash 🚀
+bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh)
 ```
 ### 🔐 Управление инфраструктурой
 
