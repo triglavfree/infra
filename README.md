@@ -1,3 +1,9 @@
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Podman](https://img.shields.io/badge/podman-4.0+-blue.svg)](https://podman.io)
+[![Gitea](https://img.shields.io/badge/gitea-latest-orange.svg)](https://gitea.io)
+[![TorrServer](https://img.shields.io/badge/torrserver-MatriX.139-red.svg)](https://github.com/YouROK/TorrServer)
+
+
 #  INFRA - GitOps-инфраструктура для домашнего сервера
 
 > **v4.1** • Quadlets + Podman + systemd + авто-обновление  
