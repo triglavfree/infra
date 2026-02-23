@@ -84,7 +84,7 @@ sudo apt update && sudo apt full-upgrade -y
 sudo reboot && exit
 ```
 </details>
-
+<details>
 <summary>Подключите флешку:</summary>
 
 ```bash
