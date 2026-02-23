@@ -960,6 +960,7 @@ ExecStart=/usr/bin/podman run --name dockge --rm \
     -v $CURRENT_HOME/infra/stacks:/opt/stacks:Z \
     -v /run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:Z \
     -e DOCKGE_STACKS_DIR=/opt/stacks \
+    -e DOCKGE_ENABLE_CONSOLE=true
     -p 5001:5001 \
     docker.io/louislam/dockge:latest
 ExecStop=/usr/bin/podman stop -t 10 dockge
