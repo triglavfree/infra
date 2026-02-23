@@ -83,8 +83,7 @@ sudo umount /mnt/usb
 ```
 </details>
 
-1. Подключитесь к серверу по SSH как пользователь
-2. Скачать и сразу выполнить в bash 🚀
+### Скачать и сразу выполнить в bash 🚀
 ```bash
 bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh)
 ```
@@ -126,14 +125,3 @@ infra backup-restore
 infra restore-local
 ```
 > 💡 Команда `infra` доступна сразу после развёртывания (добавлена в `~/.bashrc`).
-
-📚 Ресурсы 
-
-[Quadlets (Podman)](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html?spm=a2ty_o01.29997173.0.0.213551718a05nT) \
-[Podman auto-update](https://docs.podman.io/en/latest/markdown/podman-auto-update.1.html?spm=a2ty_o01.29997173.0.0.213551718a05nT) \
-[Restic](https://restic.readthedocs.io/?spm=a2ty_o01.29997173.0.0.213551718a05nT) \
-[WireGuard](https://www.wireguard.com/quickstart/?spm=a2ty_o01.29997173.0.0.213551718a05nT) \
-[AdGuard Home](https://github.com/AdguardTeam/AdGuardHome/wiki?spm=a2ty_o01.29997173.0.0.213551718a05nT)
-
-
-> ✨ Инфраструктура как код — это не про сложность, а про воспроизводимость.
