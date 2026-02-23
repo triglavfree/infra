@@ -1,7 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 # =============================================================================
-# INFRASTRUCTURE v9.4.0
+# INFRASTRUCTURE v9.5.1
 # =============================================================================
 
 # Цвета через tput (более надежный способ)
@@ -78,7 +78,7 @@ fi
 CURRENT_HOME="$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-print_header "INFRASTRUCTURE v9.4.0"
+print_header "INFRASTRUCTURE v9.5.1"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
 # =============== КАТАЛОГИ С ПРАВАМИ ===============
@@ -90,7 +90,8 @@ BIN_DIR="$INFRA_DIR/bin"
 LOGS_DIR="$INFRA_DIR/logs"
 BACKUP_DIR="$INFRA_DIR/backups"
 
-for dir in "$INFRA_DIR" "$VOLUMES_DIR" "$BIN_DIR" "$LOGS_DIR" "$BACKUP_DIR" "$BACKUP_DIR/cache"            "$VOLUMES_DIR"/{gitea,torrserver,dockge}; do
+for dir in "$INFRA_DIR" "$VOLUMES_DIR" "$BIN_DIR" "$LOGS_DIR" "$BACKUP_DIR" "$BACKUP_DIR/cache" "$BACKUP_DIR/snapshots" \
+           "$VOLUMES_DIR"/{gitea,torrserver}; do
     if [ ! -d "$dir" ]; then
         mkdir -p "$dir"
         chown "$CURRENT_USER:$CURRENT_USER" "$dir"
@@ -168,8 +169,6 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
         ufw allow 2222/tcp comment 'Gitea SSH' >/dev/null 2>&1
         # TorrServer
         ufw allow 8090/tcp comment 'TorrServer' >/dev/null 2>&1
-        # Dockge
-        ufw allow 5001/tcp comment 'Dockge' >/dev/null 2>&1
         # NetBird (WireGuard)
         ufw allow 51820/udp comment 'WireGuard' >/dev/null 2>&1
         # Включение UFW
@@ -299,20 +298,21 @@ print_box() {
     local time_str
     time_str=$(date +%H:%M:%S)
     local full_title="${title} ${time_str}"
+    
     echo ""
-    echo -e "${NEON_CYAN}══════════════════════════════════════════════════${RESET}"
+    echo -e "${NEON_CYAN}╔══════════════════════════════════════════════════╗${RESET}"
     printf "${NEON_CYAN}║${RESET} ${BOLD}%-48s${RESET} ${NEON_CYAN}║${RESET}\n" "$full_title"
-    echo -e "${NEON_CYAN}══════════════════════════════════════════════════${RESET}"
+    echo -e "${NEON_CYAN}╚══════════════════════════════════════════════════╝${RESET}"
 }
 
 print_section() {
     echo ""
     echo -e "${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}$1${RESET}"
-    echo -e "${DIM_GRAY}────────────────────────────────────────────────${RESET}"
+    echo -e "${DIM_GRAY}──────────────────────────────────────────────────${RESET}"
 }
 
 print_metric() {
-    printf "  ${DIM_GRAY}%-12s${RESET} %s\n" "$1" "$2"
+    printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "$1" "$2"
 }
 
 get_container_status() {
@@ -368,17 +368,89 @@ get_service_status() {
 get_disk_type() {
     local disk=$1
     local disk_type="unknown"
-    if [[ "$disk" == *"nvme"* ]]; then disk_type="NVMe"
-    elif [ -f "/sys/block/$(basename $disk)/queue/rotational" ]; then
-        local rotational=$(cat "/sys/block/$(basename $disk)/queue/rotational" 2>/dev/null || echo "1")
-        if [ "$rotational" = "0" ]; then disk_type="SSD"; else disk_type="HDD"; fi
+    
+    # Если диск не указан
+    [ -z "$disk" ] && echo "unknown" && return
+    
+    # Пробуем найти реальное физическое устройство
+    local real_disk=""
+    local mount_point="$INFRA_DIR"
+    
+    # Получаем устройство для точки монтирования
+    if command -v findmnt &>/dev/null; then
+        real_disk=$(findmnt -no SOURCE "$mount_point" 2>/dev/null | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
     fi
+    
+    if [ -z "$real_disk" ]; then
+        real_disk=$(df "$mount_point" 2>/dev/null | tail -1 | awk '{print $1}' | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+    fi
+    
+    # Если всё ещё не определили, используем то что передали
+    if [ -z "$real_disk" ]; then
+        real_disk="$disk"
+    fi
+    
+    # Прямая проверка через lsblk (самый надежный способ)
+    if command -v lsblk &>/dev/null; then
+        local base_disk=$(basename "$real_disk")
+        
+        # Проверяем ROTA (rotational) параметр
+        local rotational=$(lsblk -d -o ROTA "/dev/$base_disk" 2>/dev/null | tail -1)
+        if [ "$rotational" = "0" ]; then
+            disk_type="SSD"
+        elif [ "$rotational" = "1" ]; then
+            disk_type="HDD"
+        fi
+        
+        # Также проверяем модель для подтверждения
+        local model=$(lsblk -d -o MODEL "/dev/$base_disk" 2>/dev/null | tail -1)
+        if [[ "$model" == *"SSD"* ]] || [[ "$model" == *"NVMe"* ]]; then
+            disk_type="SSD"
+        elif [[ "$model" == *"HDD"* ]]; then
+            disk_type="HDD"
+        fi
+    fi
+    
+    # Если lsblk не сработал, проверяем по имени
+    if [ "$disk_type" = "unknown" ]; then
+        if [[ "$real_disk" == *"nvme"* ]]; then
+            disk_type="NVMe"
+        elif [[ "$real_disk" == *"sd"* ]]; then
+            # Проверяем rotational через sysfs
+            local dev_name=$(basename "$real_disk")
+            if [ -f "/sys/block/$dev_name/queue/rotational" ]; then
+                local rotational=$(cat "/sys/block/$dev_name/queue/rotational" 2>/dev/null || echo "1")
+                if [ "$rotational" = "0" ]; then
+                    disk_type="SSD"
+                else
+                    disk_type="HDD"
+                fi
+            fi
+        fi
+    fi
+    
+    # Специальная проверка для Netac SSD (как у вас)
+    if [ "$disk_type" = "unknown" ]; then
+        local model_info=$(lsblk -d -o MODEL 2>/dev/null | grep -i "ssd\|netac" || echo "")
+        if [[ "$model_info" =~ [Ss][Ss][Dd] ]] || [[ "$model_info" =~ [Nn][Ee][Tt][Aa][Cc] ]]; then
+            disk_type="SSD"
+        fi
+    fi
+    
     echo "$disk_type"
 }
 
-# Получение количества снапшотов restic
+# Получение количества снапшотов (restic + локальные)
 get_backup_count() {
     local count=0
+    
+    # Считаем локальные архивы
+    if [ -d "$BACKUP_DIR/snapshots" ]; then
+        local local_count=$(find "$BACKUP_DIR/snapshots" -name "*.tar.gz" -type f 2>/dev/null | wc -l)
+        count=$local_count
+    fi
+    
+    # Если есть restic репозиторий - добавляем его снапшоты
     if [ -f "$INFRA_DIR/.backup_env" ]; then
         source "$INFRA_DIR/.backup_env"
         # Используем restic snapshots с json выводом
@@ -394,23 +466,11 @@ get_backup_count() {
 
         if [ -n "$snapshots_json" ] && [ "$snapshots_json" != "null" ]; then
             # Парсим JSON массив - считаем количество объектов
-            count=$(echo "$snapshots_json" | grep -c '"time"' || echo "0")
-        fi
-
-        # Fallback если json не сработал
-        if [ "$count" = "0" ]; then
-            local snapshots_text
-            snapshots_text=$(podman run --rm \
-                -e RESTIC_REPOSITORY="$RESTIC_REPOSITORY" \
-                -e RESTIC_PASSWORD="$RESTIC_PASSWORD" \
-                ${AWS_ACCESS_KEY_ID:+-e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"} \
-                ${AWS_SECRET_ACCESS_KEY:+-e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"} \
-                -v "$BACKUP_DIR/cache:/cache" \
-                docker.io/restic/restic:latest \
-                snapshots --cache-dir=/cache 2>/dev/null | grep -E '^[0-9a-f]{8}' | wc -l)
-            count=${snapshots_text:-0}
+            local restic_count=$(echo "$snapshots_json" | grep -c '"time"' || echo "0")
+            count=$((count + restic_count))
         fi
     fi
+    
     echo "$count"
 }
 
@@ -423,13 +483,7 @@ status_cmd() {
     local gitea_svc=$(get_service_status "gitea" "user")
     local gitea_ctr=$(get_container_status "gitea" "user")
     print_metric "Gitea" "$gitea_svc $gitea_ctr"
-
-    local dockge_svc=$(get_service_status "dockge" "user")
-    local dockge_ctr=$(get_container_status "dockge" "user")
-    print_metric "Dockge" "$dockge_svc $dockge_ctr"
-    if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^dockge$"; then
-        print_metric "" "${MUTED_GRAY}http://${server_ip}:5001${RESET}"
-    fi
+    
     if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^gitea$"; then
         local gitea_port=$(podman port gitea 2>/dev/null | grep "3000/tcp" | cut -d: -f2 || echo "3000")
         local gitea_ssh=$(podman port gitea 2>/dev/null | grep "2222/tcp" | cut -d: -f2 || echo "2222")
@@ -443,7 +497,7 @@ status_cmd() {
     local torr_svc=$(get_service_status "torrserver" "user")
     local torr_ctr=$(get_container_status "torrserver" "user")
     print_metric "TorrServer" "$torr_svc $torr_ctr"
-    if systemctl --user is-active --quiet torrserver 2>/dev/null || podman ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^torrserver$"; then
+    if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^torrserver$"; then
         local torr_port=$(podman port torrserver 2>/dev/null | grep "8090/tcp" | cut -d: -f2 || echo "8090")
         print_metric "" "${MUTED_GRAY}http://${server_ip}:${torr_port}${RESET}"
     fi
@@ -468,9 +522,10 @@ status_cmd() {
     print_section "Resources"
     local disk_info=$(df -h "$INFRA_DIR" 2>/dev/null | tail -1)
     local disk_usage=$(echo "$disk_info" | awk '{print $3 "/" $2 " (" $5 ")"}')
-    local disk_dev=$(echo "$disk_info" | awk '{print $1}' | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+    local disk_dev=$(echo "$disk_info" | awk '{print $1}')
     local disk_type=$(get_disk_type "$disk_dev")
-    print_metric "Disk" "$disk_usage ${NEON_CYAN}[${disk_type}]${RESET}"
+    local fs_type=$(df -T "$INFRA_DIR" 2>/dev/null | tail -1 | awk '{print $2}')
+    print_metric "Disk" "$disk_usage ${NEON_CYAN}[${disk_type}]${RESET} ${MUTED_GRAY}(${fs_type})${RESET}"
 
     local mem_info=$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}')
     print_metric "Memory" "$mem_info"
@@ -502,19 +557,33 @@ status_cmd() {
     else print_metric "SSH Auth" "${NEON_YELLOW}password${RESET}"; fi
 
     print_section "Backup"
-    if [ -f "$INFRA_DIR/.backup_configured" ]; then
+    if [ -f "$INFRA_DIR/.backup_configured" ] || [ -d "$BACKUP_DIR/snapshots" ]; then
         local last_backup="never"
-        if [ -f "$INFRA_DIR/logs/backup.log" ]; then
-            # Ищем строку с датой вида YYYY-MM-DD HH:MM:SS перед "saved"
-            last_backup=$(grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" "$INFRA_DIR/logs/backup.log" 2>/dev/null | grep "saved" | tail -1 | awk '{print $1 " " $2}' || echo "never")
-            [ -z "$last_backup" ] && last_backup="never"
+        local backup_source=""
+        
+        # Проверяем restic бэкапы
+        if [ -f "$INFRA_DIR/.backup_configured" ] && [ -f "$INFRA_DIR/logs/backup.log" ]; then
+            last_backup=$(grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}" "$INFRA_DIR/logs/backup.log" 2>/dev/null | grep "saved\|Local backup" | tail -1 | awk '{print $1 " " $2}' || echo "never")
+            backup_source="restic"
         fi
-
+        
+        # Проверяем локальные архивы (если они новее)
+        if [ -d "$BACKUP_DIR/snapshots" ]; then
+            local latest_local=$(find "$BACKUP_DIR/snapshots" -name "*.tar.gz" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+            if [ -n "$latest_local" ]; then
+                local local_date=$(stat -c %y "$latest_local" 2>/dev/null | cut -d' ' -f1,2 | cut -d'.' -f1)
+                if [ "$last_backup" = "never" ] || [ "$(date -d "$local_date" +%s 2>/dev/null || echo 0)" -gt "$(date -d "$last_backup" +%s 2>/dev/null || echo 0)" ]; then
+                    last_backup="$local_date"
+                    backup_source="local"
+                fi
+            fi
+        fi
+        
         # Используем функцию для получения количества снапшотов
         local backup_count=$(get_backup_count)
-
+        
         print_metric "Status" "${ICON_OK} ${NEON_GREEN}configured${RESET}"
-        print_metric "Last" "$last_backup"
+        print_metric "Last" "$last_backup ${MUTED_GRAY}[$backup_source]${RESET}"
         print_metric "Snapshots" "${NEON_CYAN}${backup_count}${RESET}"
     else
         print_metric "Status" "${DIM_GRAY}● not configured${RESET}"
@@ -522,7 +591,7 @@ status_cmd() {
     fi
 
     echo ""
-    echo -e "${DIM_GRAY}────────────────────────────────────────────────${RESET}"
+    echo -e "${DIM_GRAY}──────────────────────────────────────────────────${RESET}"
     echo -e "${MUTED_GRAY}Commands: ${NEON_CYAN}start${RESET}|${NEON_CYAN}stop${RESET}|${NEON_CYAN}restart${RESET}|${NEON_CYAN}logs${RESET}|${NEON_CYAN}backup${RESET}|${NEON_CYAN}clear${RESET}"
 }
 
@@ -531,12 +600,12 @@ case "${1:-status}" in
     logs) [ "$2" = "netbird" ] && sudo journalctl -u netbird -f || journalctl --user -u "$2" -f ;;
     stop)
         echo -e "${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
-        systemctl --user stop gitea torrserver dockge 2>/dev/null && echo -e "  ${ICON_OK} Gitea/TorrServer" || echo -e "  ${DIM_GRAY}○ Gitea/TorrServer${RESET}"
+        systemctl --user stop gitea torrserver 2>/dev/null && echo -e "  ${ICON_OK} Gitea/TorrServer" || echo -e "  ${DIM_GRAY}○ Gitea/TorrServer${RESET}"
         sudo systemctl stop gitea-runner netbird 2>/dev/null && echo -e "  ${ICON_OK} Runner/NetBird" || echo -e "  ${DIM_GRAY}○ Runner/NetBird${RESET}"
         ;;
     start)
         echo -e "${NEON_GREEN}▸ Запуск сервисов...${RESET}"
-        systemctl --user start gitea torrserver dockge 2>/dev/null && echo -e "  ${ICON_OK} Gitea/TorrServer" || echo -e "  ${ICON_FAIL} Gitea/TorrServer"
+        systemctl --user start gitea torrserver 2>/dev/null && echo -e "  ${ICON_OK} Gitea/TorrServer" || echo -e "  ${ICON_FAIL} Gitea/TorrServer"
         sudo systemctl start gitea-runner netbird 2>/dev/null && echo -e "  ${ICON_OK} Runner/NetBird" || echo -e "  ${ICON_FAIL} Runner/NetBird"
         ;;
     restart)
@@ -552,14 +621,14 @@ case "${1:-status}" in
         read -rp "  Вы уверены? Все данные будут удалены [yes/N]: " CONFIRM
         if [ "$CONFIRM" = "yes" ]; then
             echo -e "  ${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
-            systemctl --user stop gitea torrserver dockge 2>/dev/null || true
+            systemctl --user stop gitea torrserver 2>/dev/null || true
             echo -e "    ${ICON_OK} User сервисы остановлены"
             sudo systemctl stop gitea-runner netbird 2>/dev/null || true
             sudo systemctl disable gitea-runner netbird 2>/dev/null || true
             echo -e "    ${ICON_OK} Rootful сервисы остановлены"
 
             echo -e "  ${NEON_YELLOW}▸ Удаление контейнеров...${RESET}"
-            podman rm -f gitea torrserver dockge 2>/dev/null || true
+            podman rm -f gitea torrserver 2>/dev/null || true
             echo -e "    ${ICON_OK} User контейнеры удалены"
             sudo podman rm -f gitea-runner netbird 2>/dev/null || true
             echo -e "    ${ICON_OK} Rootful контейнеры удалены"
@@ -575,7 +644,7 @@ case "${1:-status}" in
             echo -e "    ${ICON_OK} Podman очищен"
 
             echo -e "  ${NEON_YELLOW}▸ Удаление systemd units...${RESET}"
-            rm -f ~/.config/systemd/user/gitea.service ~/.config/systemd/user/torrserver.service ~/.config/systemd/user/dockge.service
+            rm -f ~/.config/systemd/user/gitea.service ~/.config/systemd/user/torrserver.service
             sudo rm -f /etc/systemd/system/gitea-runner.service /etc/systemd/system/netbird.service
             systemctl --user daemon-reload
             sudo systemctl daemon-reload
@@ -612,12 +681,18 @@ case "${1:-status}" in
             exit 1
         fi
         source "$INFRA_DIR/.backup_env"
-        mkdir -p "$BACKUP_DIR/cache"
+        mkdir -p "$BACKUP_DIR/cache" "$BACKUP_DIR/snapshots"
         backup_time=$(date "+%Y-%m-%d %H:%M:%S")
         echo -e "${NEON_CYAN}▸ Создание бэкапа ${backup_time}...${RESET}"
-        mkdir -p "$BACKUP_DIR/snapshots"
+        
+        # Создаем локальный архив volumes
         SNAPSHOT="$BACKUP_DIR/snapshots/infra-$(date +%Y%m%d-%H%M%S).tar.gz"
-        tar -czf "$SNAPSHOT" -C "$VOLUMES_DIR" . 2>/dev/null || true
+        if tar -czf "$SNAPSHOT" -C "$VOLUMES_DIR" . 2>/dev/null; then
+            echo "$backup_time - Local backup created: $(basename $SNAPSHOT)" >> "$INFRA_DIR/logs/backup.log"
+            echo -e "  ${ICON_OK} Локальный архив создан: $(basename $SNAPSHOT)"
+        else
+            echo -e "  ${ICON_WARN} Ошибка создания локального архива"
+        fi
 
         extra_mounts=""
         if [[ "$RESTIC_REPOSITORY" == local:* ]]; then
@@ -637,11 +712,13 @@ case "${1:-status}" in
             ${extra_mounts} \
             docker.io/restic/restic:latest \
             backup /data --exclude=/data/backups --cache-dir=/cache 2>&1 | tee -a "$INFRA_DIR/logs/backup.log"; then
-            echo -e "  ${ICON_FAIL} ${NEON_RED}Ошибка бэкапа${RESET}"
-            rm -f "$SNAPSHOT" 2>/dev/null
-            exit 1
+            echo -e "  ${ICON_FAIL} ${NEON_RED}Ошибка restic бэкапа${RESET}"
+        else
+            echo -e "  ${ICON_OK} ${NEON_GREEN}Restic backup completed${RESET}"
         fi
-        ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+        
+        # Очищаем старые локальные архивы (оставляем последние 7)
+        ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm -f
 
         forget_mounts=""
         if [[ "$RESTIC_REPOSITORY" == local:* ]]; then
@@ -660,7 +737,6 @@ case "${1:-status}" in
             ${forget_mounts} \
             docker.io/restic/restic:latest \
             forget --keep-daily 7 --prune --cache-dir=/cache 2>/dev/null || true
-        echo -e "  ${ICON_OK} ${NEON_GREEN}Backup completed${RESET}"
         ;;
     backup-setup)
         echo -e "${NEON_CYAN}▸ Настройка бэкапов (Restic)${RESET}"
@@ -735,15 +811,26 @@ EOENV
         echo -e "  ${MUTED_GRAY}Тест: infra backup${RESET}"
         ;;
     backup-list)
-        if [ ! -f "$INFRA_DIR/.backup_configured" ]; then echo -e "${ICON_FAIL} Бэкап не настроен"; exit 1; fi
-        source "$INFRA_DIR/.backup_env"
-        list_mounts=""
-        if [[ "$RESTIC_REPOSITORY" == local:* ]]; then
-            list_local_path="${RESTIC_REPOSITORY#local:}"
-            if [ -n "$list_local_path" ]; then list_mounts="-v ${list_local_path}:${list_local_path}:Z"; fi
+        echo -e "${NEON_CYAN}▸ Локальные архивы:${RESET}"
+        if [ -d "$BACKUP_DIR/snapshots" ]; then
+            ls -lh "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | awk '{printf "  %s %s %s\n", $6, $7, $9}' | sed 's|.*/||' || echo "  Нет локальных архивов"
+        else
+            echo "  Нет локальных архивов"
         fi
-        echo -e "${NEON_CYAN}▸ Снапшоты:${RESET}"
-        podman run --rm -e RESTIC_REPOSITORY="$RESTIC_REPOSITORY" -e RESTIC_PASSWORD="$RESTIC_PASSWORD" ${AWS_ACCESS_KEY_ID:+-e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"} ${AWS_SECRET_ACCESS_KEY:+-e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"} -v "$BACKUP_DIR/cache:/cache" ${list_mounts} docker.io/restic/restic:latest snapshots --cache-dir=/cache
+        
+        echo ""
+        echo -e "${NEON_CYAN}▸ Restic снапшоты:${RESET}"
+        if [ -f "$INFRA_DIR/.backup_configured" ]; then
+            source "$INFRA_DIR/.backup_env"
+            list_mounts=""
+            if [[ "$RESTIC_REPOSITORY" == local:* ]]; then
+                list_local_path="${RESTIC_REPOSITORY#local:}"
+                if [ -n "$list_local_path" ]; then list_mounts="-v ${list_local_path}:${list_local_path}:Z"; fi
+            fi
+            podman run --rm -e RESTIC_REPOSITORY="$RESTIC_REPOSITORY" -e RESTIC_PASSWORD="$RESTIC_PASSWORD" ${AWS_ACCESS_KEY_ID:+-e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"} ${AWS_SECRET_ACCESS_KEY:+-e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"} -v "$BACKUP_DIR/cache:/cache" ${list_mounts} docker.io/restic/restic:latest snapshots --cache-dir=/cache
+        else
+            echo "  Restic не настроен"
+        fi
         ;;
     backup-restore)
         if [ ! -f "$INFRA_DIR/.backup_configured" ]; then 
@@ -764,7 +851,7 @@ EOENV
         read -rp "  Куда восстановить [$INFRA_DIR]: " TARGET; TARGET="${TARGET:-$INFRA_DIR}"
         read -rp "  Остановить сервисы перед восстановлением? [Y/n]: " STOP_SERV
         if [[ ! "${STOP_SERV:-Y}" =~ ^[Nn]$ ]]; then
-            systemctl --user stop gitea torrserver dockge 2>/dev/null || true
+            systemctl --user stop gitea torrserver 2>/dev/null || true
             sudo systemctl stop gitea-runner netbird 2>/dev/null || true
             echo -e "  ${ICON_OK} Сервисы остановлены"
         fi
@@ -774,7 +861,7 @@ EOENV
         echo -e "  ${ICON_INFO} Перезапустите сервисы: infra start"
         ;;
     restore-local)
-        # Восстановление из локальных tar.gz архивов
+        # Улучшенное восстановление из локальных tar.gz архивов
         echo -e "${NEON_CYAN}▸ Восстановление из локального архива${RESET}"
 
         # Ищем доступные архивы
@@ -795,7 +882,8 @@ EOENV
         for i in "${!archives[@]}"; do
             local size=$(du -h "${archives[$i]}" 2>/dev/null | cut -f1)
             local date=$(stat -c %y "${archives[$i]}" 2>/dev/null | cut -d' ' -f1)
-            printf "  ${NEON_CYAN}%2d)${RESET} %-30s ${DIM_GRAY}(%s, %s)${RESET}\n" $((i+1)) "$(basename "${archives[$i]}")" "$size" "$date"
+            local time=$(stat -c %y "${archives[$i]}" 2>/dev/null | cut -d' ' -f2 | cut -d'.' -f1)
+            printf "  ${NEON_CYAN}%2d)${RESET} %-30s ${DIM_GRAY}(%s, %s %s)${RESET}\n" $((i+1)) "$(basename "${archives[$i]}")" "$size" "$date" "$time"
         done
 
         echo ""
@@ -808,12 +896,21 @@ EOENV
 
         local selected_archive="${archives[$((ARCHIVE_NUM-1))]}"
         echo -e "  ${ICON_OK} Выбран: $(basename "$selected_archive")"
-
+        
+        # Показываем содержимое архива
+        echo ""
+        echo -e "  ${NEON_CYAN}Содержимое архива:${RESET}"
+        tar -tzf "$selected_archive" 2>/dev/null | head -10 | sed 's/^/    /'
+        local total_files=$(tar -tzf "$selected_archive" 2>/dev/null | wc -l)
+        echo -e "    ${MUTED_GRAY}... и еще $((total_files - 10)) файлов (всего: $total_files)${RESET}"
+        
+        echo ""
         read -rp "  Остановить сервисы перед восстановлением? [Y/n]: " STOP_SERV
         if [[ ! "${STOP_SERV:-Y}" =~ ^[Nn]$ ]]; then
-            systemctl --user stop gitea torrserver dockge 2>/dev/null || true
+            echo -e "  ${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
+            systemctl --user stop gitea torrserver 2>/dev/null || true
             sudo systemctl stop gitea-runner netbird 2>/dev/null || true
-            echo -e "  ${ICON_OK} Сервисы остановлены"
+            echo -e "    ${ICON_OK} Сервисы остановлены"
         fi
 
         read -rp "  Очистить текущие данные перед восстановлением? [y/N]: " CLEAN_DATA
@@ -821,18 +918,54 @@ EOENV
             echo -e "  ${NEON_YELLOW}▸ Очистка текущих данных...${RESET}"
             rm -rf "$VOLUMES_DIR"/*
             echo -e "    ${ICON_OK} Данные очищены"
+        else
+            # Спрашиваем про перезапись
+            read -rp "  Перезаписывать существующие файлы? [Y/n]: " OVERWRITE
+            local tar_opts="-xzf"
+            if [[ "$OVERWRITE" =~ ^[Nn]$ ]]; then
+                tar_opts="-xzkf"  # -k не перезаписывает существующие файлы
+                echo -e "    ${ICON_INFO} Существующие файлы будут сохранены"
+            fi
         fi
 
         echo -e "  ${NEON_CYAN}▸ Распаковка архива...${RESET}"
-        if tar -xzf "$selected_archive" -C "$VOLUMES_DIR" 2>/dev/null; then
-            echo -e "    ${ICON_OK} ${NEON_GREEN}Архив распакован${RESET}"
-            # Фиксим права
-            chown -R "$USER:$USER" "$VOLUMES_DIR" 2>/dev/null || true
-            echo -e "    ${ICON_OK} Права восстановлены"
+        
+        # Создаем временную директорию для проверки
+        local temp_dir=$(mktemp -d)
+        
+        # Сначала распаковываем во временную директорию для проверки
+        if tar -xzf "$selected_archive" -C "$temp_dir" 2>/dev/null; then
+            # Проверяем структуру
+            if [ -d "$temp_dir/gitea" ] || [ -d "$temp_dir/torrserver" ]; then
+                # Копируем с сохранением прав
+                cp -a "$temp_dir"/* "$VOLUMES_DIR"/ 2>/dev/null || true
+                echo -e "    ${ICON_OK} ${NEON_GREEN}Архив распакован${RESET}"
+                
+                # Фиксим права
+                chown -R "$USER:$USER" "$VOLUMES_DIR" 2>/dev/null || true
+                echo -e "    ${ICON_OK} Права восстановлены"
+                
+                # Показываем что восстановлено
+                local restored_dirs=$(ls -1 "$VOLUMES_DIR" 2>/dev/null | wc -l)
+                echo -e "    ${ICON_INFO} Восстановлено директорий: $restored_dirs"
+            else
+                echo -e "    ${ICON_WARN} Неожиданная структура архива"
+                read -rp "    Продолжить? [y/N]: " FORCE
+                if [[ "$FORCE" =~ ^[Yy]$ ]]; then
+                    cp -a "$temp_dir"/* "$VOLUMES_DIR"/ 2>/dev/null || true
+                else
+                    rm -rf "$temp_dir"
+                    exit 1
+                fi
+            fi
         else
             echo -e "    ${ICON_FAIL} ${NEON_RED}Ошибка распаковки${RESET}"
+            rm -rf "$temp_dir"
             exit 1
         fi
+        
+        # Очищаем временную директорию
+        rm -rf "$temp_dir"
 
         echo ""
         echo -e "${NEON_GREEN}${BOLD}╔════════════════════════════════════════════════╗${RESET}"
@@ -843,9 +976,9 @@ EOENV
     update)
         echo -e "${NEON_CYAN}▸ Принудительное обновление контейнеров...${RESET}"
         echo -e "  ${NEON_YELLOW}Rootless контейнеры...${RESET}"
-        systemctl --user stop gitea torrserver dockge 2>/dev/null || true
+        systemctl --user stop gitea torrserver 2>/dev/null || true
         podman auto-update --rollback 2>/dev/null && echo -e "    ${ICON_OK} Обновлено" || echo -e "    ${ICON_INFO} Нет обновлений"
-        systemctl --user start gitea torrserver dockge 2>/dev/null || true
+        systemctl --user start gitea torrserver 2>/dev/null || true
 
         echo -e "  ${NEON_YELLOW}Rootful контейнеры...${RESET}"
         sudo systemctl stop gitea-runner netbird 2>/dev/null || true
@@ -879,6 +1012,9 @@ ExecStart=/usr/bin/podman run --name gitea --rm \
     -v $CURRENT_HOME/infra/volumes/gitea:/data:Z \
     -e GITEA__server__ROOT_URL=http://$SERVER_IP:3000/ \
     -e GITEA__actions__ENABLED=true \
+    -e GITEA__repository_upload__ENABLED=true \
+    -e GITEA__repository_upload__MAX_FILES=1000 \
+    -e GITEA__repository_upload__FILE_MAX_SIZE=5000 \
     -p 3000:3000 -p 2222:22 \
     docker.io/gitea/gitea:latest
 ExecStop=/usr/bin/podman stop -t 10 gitea
@@ -939,42 +1075,6 @@ systemctl --user start torrserver.service && print_success "TorrServer запу�
 print_url "http://${SERVER_IP}:8090/"
 print_info "TorrServer Web UI доступен"
 
-# =============== DOCKGE ROOTLESS ===============
-print_step "Создание Dockge (rootless)"
-
-mkdir -p "$CURRENT_HOME/infra/stacks"
-chown "$CURRENT_USER:$CURRENT_USER" "$CURRENT_HOME/infra/stacks"
-
-cat > ~/.config/systemd/user/dockge.service <<EOF
-[Unit]
-Description=Dockge - Container Management UI
-After=network-online.target
-
-[Service]
-Type=simple
-Restart=always
-ExecStartPre=-/usr/bin/podman rm -f dockge
-ExecStart=/usr/bin/podman run --name dockge --rm \
-    --label io.containers.autoupdate=registry \
-    -v $CURRENT_HOME/infra/volumes/dockge:/app/data:Z \
-    -v $CURRENT_HOME/infra/stacks:/opt/stacks:Z \
-    -v /run/user/$CURRENT_UID/podman/podman.sock:/var/run/docker.sock:Z \
-    -e DOCKGE_STACKS_DIR=/opt/stacks \
-    -e DOCKGE_ENABLE_CONSOLE=true
-    -p 5001:5001 \
-    docker.io/louislam/dockge:latest
-ExecStop=/usr/bin/podman stop -t 10 dockge
-
-[Install]
-WantedBy=default.target
-EOF
-
-chown "$CURRENT_USER:$CURRENT_USER" ~/.config/systemd/user/dockge.service
-systemctl --user daemon-reload
-systemctl --user start dockge.service && print_success "Dockge запущен" || print_warning "Возможна ошибка запуска"
-print_url "http://${SERVER_IP}:5001/"
-print_info "Dockge управляет контейнерами через Podman socket"
-
 # =============== RUNNER ROOTFUL ===============
 print_step "Настройка Gitea Runner (rootful)"
 
@@ -998,7 +1098,8 @@ if [ $SKIP_RUNNER -eq 0 ]; then
     echo ""
     [ $GITEA_READY -eq 1 ] && echo -e "  ${NEON_GREEN}✓ Gitea готова!${RESET}" || echo -e "  ${NEON_YELLOW}⚡ Gitea может быть ещё инициализируется${RESET}"
     echo -e "  Откройте: ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
-    echo ""
+    print_info "  Перейдите: Панель Управления → Действия → Раннеры → Создать новый раннер "
+    print_info "  Скопируйте токен регистрации раннера "
 
     read -rp "  Registration Token: " RUNNER_TOKEN
 
@@ -1048,6 +1149,7 @@ fi
 print_step "Настройка NetBird (rootful)"
 
 # Проверяем существование контейнера netbird
+SKIP_NETBIRD=0
 if sudo podman ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^netbird$" || sudo systemctl is-active --quiet netbird.service 2>/dev/null; then
     print_success "NetBird уже существует (контейнер или сервис найден)"
     read -rp "  Пересоздать? [y/N]: " RECREATE_NB
@@ -1058,14 +1160,12 @@ if sudo podman ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^netbird$" || 
     else
         SKIP_NETBIRD=1
     fi
-else
-    SKIP_NETBIRD=0
 fi
 
 if [ "${SKIP_NETBIRD:-0}" -eq 0 ]; then
     echo ""
     echo -e "${NEON_BLUE}${BOLD}▸ ПОДКЛЮЧЕНИЕ NETBIRD${RESET}"
-    echo -e "  Получить ключ: ${NEON_CYAN}https://app.netbird.io/setup-keys ${RESET}"
+    echo -e "  Получить ключ: ${NEON_CYAN}https://app.netbird.io/setup-keys  ${RESET}"
     echo ""
     read -rp "  Setup Key (Enter - пропустить): " NB_KEY
 
@@ -1086,7 +1186,7 @@ ExecStart=/usr/bin/podman run --name netbird --rm \
     --label io.containers.autoupdate=registry \
     -v /var/lib/netbird:/etc/netbird:Z \
     -e NB_SETUP_KEY=$NB_KEY \
-    -e NB_MANAGEMENT_URL=https://api.netbird.io:443   \
+    -e NB_MANAGEMENT_URL=https://api.netbird.io:443    \
     docker.io/netbirdio/netbird:latest
 ExecStop=/usr/bin/podman stop -t 10 netbird
 
@@ -1130,11 +1230,11 @@ fi
 print_header "ГОТОВО"
 echo -e "${NEON_GREEN}●${RESET} Gitea:      ${NEON_CYAN}http://$SERVER_IP:3000${RESET}"
 echo -e "${NEON_GREEN}●${RESET} TorrServer: ${NEON_CYAN}http://$SERVER_IP:8090${RESET}"
-echo -e "${NEON_GREEN}●${RESET} Dockge:     ${NEON_CYAN}http://$SERVER_IP:5001${RESET}"
 echo -e "
 Управление: ${NEON_CYAN}infra status|start|stop|logs <сервис>${RESET}"
 echo -e "Обновление: ${NEON_CYAN}infra update${RESET} (auto: каждые 5 мин)"
 echo -e "Очистка:    ${NEON_CYAN}infra clear${RESET}"
 echo -e "Бэкап:      ${NEON_CYAN}infra backup-setup${RESET} → ${NEON_CYAN}infra backup${RESET}"
+echo -e "Список бэкапов: ${NEON_CYAN}infra backup-list${RESET}"
 echo -e "Восстановление: ${NEON_CYAN}infra backup-restore${RESET} (restic) | ${NEON_CYAN}infra restore-local${RESET} (tar.gz)"
 echo -e "Директория: ${NEON_CYAN}$INFRA_DIR${RESET} (владелец: $CURRENT_USER)"
