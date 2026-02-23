@@ -82,9 +82,8 @@ sudo umount /mnt/usb
 </details>
 
 1. Подключитесь к серверу по SSH как пользователь
-2. Скопируйте скрипт с флешки (пример для /media/usb)
+2. Скачать и сразу выполнить в bash 🚀
 ```bash
-# Скачать и сразу выполнить в bash 🚀
 bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh)
 ```
 ### 🔐 Управление инфраструктурой
