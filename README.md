@@ -85,7 +85,7 @@ sudo umount /mnt/usb
 
 ### Скачать и сразу выполнить в bash 🚀
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh)
+bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra_quadlet.sh)
 ```
 ### 🔐 Управление инфраструктурой
 
