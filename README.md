@@ -121,8 +121,22 @@ infra clear
 ```
 > 💡 Команда `infra` доступна сразу после развёртывания (добавлена в `~/.bashrc`).
 
+---
+
 <p align="center">
-  <img src="https://raw.githubusercontent.com/triglavfree/infra/main/.github/heart.png" width="20" height="20" alt="heart" style="vertical-align: middle;">
-  Сделано с ❤️ и заботой о вашей инфраструктуре
-  <img src="https://raw.githubusercontent.com/triglavfree/infra/main/.github/heart.png" width="20" height="20" alt="heart" style="vertical-align: middle;">
+  <img src="https://img.shields.io/badge/Харе_Кришна!-🕉️-FF9900?style=for-the-badge" alt="Харе Кришна!" />
+</p>
+
+<p align="center">
+  <b>Сделано с ❤️ и заботой о вашей инфраструктуре</b>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Version-10.0.0-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" />
+  <img src="https://img.shields.io/badge/Ubuntu-24.04-E95420?style=flat-square&logo=ubuntu" />
+</p>
+
+<p align="center">
+  <i>Праведная инфраструктура для праведных дел</i> 🙏
 </p>
