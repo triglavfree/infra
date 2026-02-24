@@ -300,20 +300,42 @@ systemctl --user daemon-reload
 systemctl --user start gitea.service
 print_success "Gitea запущена"
 
-print_info "Ожидание 15 сек..."
-sleep 15
+print_info "Настройте администратора Gitea"
+print_url "http://${SERVER_IP}:3000/"
+print_info "Ожидание 60 секунд для настройки..."
+print_info "После настройки API станет доступен"
 
+# Ждём 60 секунд, чтобы пользователь успел настроить Gitea
+sleep 60
+
+# Проверяем доступность API
 if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1; then
     print_success "Gitea API доступен"
     GITEA_READY=1
 else
-    print_warning "Gitea API не отвечает"
+    print_warning "Gitea API всё ещё не отвечает"
+    print_info "Возможно, настройка ещё не завершена"
+    print_info "Продолжаем установку, но runner придётся настроить позже"
     GITEA_READY=0
 fi
-print_url "http://${SERVER_IP}:3000/"
 
 # =============== RUNNER ROOTFUL (QUADLET) ===============
 print_step "Настройка Gitea Runner"
+
+if [ $GITEA_READY -eq 0 ]; then
+    print_warning "Gitea API не доступен"
+    echo ""
+    echo -e "  ${NEON_PURPLE}${BOLD}▸ ДЛЯ НАСТРОЙКИ RUNNER'А ТРЕБУЕТСЯ РАБОЧАЯ GITEA${RESET}"
+    echo ""
+    echo -e "  ${ICON_INFO} Сделайте следующее:"
+    echo -e "   1️⃣ Откройте: ${NEON_CYAN}http://$SERVER_IP:3000/${RESET}"
+    echo -e "   2️⃣ Завершите настройку администратора"
+    echo -e "   3️⃣ Перейдите в: ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
+    echo -e "   4️⃣ Создайте новый раннер и получите токен"
+    echo ""
+    read -rp "  Нажмите Enter, когда Gitea будет готова и вы получите токен... " -s
+    echo ""
+fi
 
 SKIP_RUNNER=0
 if sudo systemctl list-unit-files 2>/dev/null | grep -q "gitea-runner.service" || [ -f "$QUADLET_SYSTEM_DIR/gitea-runner.container" ]; then
@@ -336,7 +358,8 @@ if [ $SKIP_RUNNER -eq 0 ]; then
     echo -e "${NEON_PURPLE}${BOLD}▸ РЕГИСТРАЦИЯ RUNNER'А${RESET}"
     echo ""
     echo -e "  Откройте: ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
-    print_info "  Создайте новый раннер и скопируйте токен"
+    echo -e "  (если вы ещё не создали токен - сделайте это сейчас)"
+    echo ""
     read -rp "  Registration Token: " RUNNER_TOKEN
 
     if [ -n "$RUNNER_TOKEN" ]; then
@@ -381,6 +404,8 @@ EOF
         sleep 8
         if sudo podman ps --format "{{.Names}}" | grep -q "^gitea-runner$"; then
             print_success "Runner запущен"
+            print_info "Проверьте регистрацию в Gitea:"
+            print_url "http://$SERVER_IP:3000/-/admin/actions/runners"
             sudo podman logs gitea-runner 2>&1 | tail -5
         else
             print_error "Ошибка запуска runner"
@@ -1011,9 +1036,20 @@ fi
 
 # =============== ИТОГ ===============
 print_header "ГОТОВО v10.0.0"
-echo -e "${NEON_GREEN}●${RESET} Gitea:      ${NEON_CYAN}http://$SERVER_IP:3000${RESET}"
-echo -e "${NEON_GREEN}●${RESET} TorrServer: ${NEON_CYAN}http://$SERVER_IP:8090${RESET}"
+echo -e "${NEON_GREEN}●${RESET} TorrServer: ${NEON_CYAN}http://$SERVER_IP:8090/${RESET} ${NEON_GREEN}(доступен сразу)${RESET}"
+echo -e "${NEON_GREEN}●${RESET} Gitea:      ${NEON_CYAN}http://$SERVER_IP:3000/${RESET}"
+if [ $GITEA_READY -eq 0 ]; then
+    echo -e "                ${NEON_YELLOW}⚠ Требуется настройка администратора${RESET}"
+    echo -e "                ${MUTED_GRAY}1. Откройте ссылку и создайте администратора${RESET}"
+    echo -e "                ${MUTED_GRAY}2. После настройки API станет доступен${RESET}"
+fi
 echo -e "${NEON_GREEN}●${RESET} Runner:     ${NEON_CYAN}sudo systemctl status gitea-runner${RESET}"
+if [ $GITEA_READY -eq 1 ]; then
+    echo -e "                ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
+else
+    echo -e "                ${MUTED_GRAY}(настройте после инициализации Gitea)${RESET}"
+fi
 echo -e "${NEON_GREEN}●${RESET} NetBird:    ${NEON_CYAN}sudo systemctl status netbird${RESET}"
 echo -e "\nУправление: ${NEON_CYAN}infra status${RESET}"
 echo -e "Логи:       ${NEON_CYAN}infra logs${RESET}"
+echo -e "Обновление: ${NEON_CYAN}infra update${RESET}"
