@@ -90,38 +90,30 @@ bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra_qu
 ### 🔐 Управление инфраструктурой
 
 ```bash
-# Показать статус всех сервисов (самая полезная команда)
+# Статус всей инфраструктуры
 infra status
 
-# Запустить все сервисы
-infra start
-
-# Остановить все сервисы
-infra stop
-
-# Посмотреть логи сервиса
+# Логи сервисов
 infra logs gitea
 infra logs torrserver
-infra logs netbird      # требует sudo
-infra logs gitea-runner # требует sudo
+sudo infra logs netbird
+sudo infra logs gitea-runner
 
-# Перезапустить конкретный сервис
+# Управление
+infra start
+infra stop
 infra restart gitea
-infra restart netbird
 
-# Принудительное обновление контейнеров
+# Бэкапы
+infra backup-setup
+infra backup
+infra backup-list
+infra restore-local
+
+# Обновление контейнеров
 infra update
 
-# Создать бэкап вручную
-infra backup
-
-# Посмотреть список всех бэкапов
-infra backup-list
-
-# Восстановить из restic снапшота
-infra backup-restore
-
-# Восстановить из локального архива
-infra restore-local
+# Полное удаление
+infra clear
 ```
 > 💡 Команда `infra` доступна сразу после развёртывания (добавлена в `~/.bashrc`).
