@@ -51,7 +51,7 @@ chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && sudo service ssh reload
 
 <details>
  
- <summary>Обновите Ситему:</summary>
+ <summary>Обновите Систему:</summary>
  
 ```bash
 sudo apt update && sudo apt full-upgrade -y
