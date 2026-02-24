@@ -276,30 +276,57 @@ get_container_status() {
     local runtime=""
     [ "$user" = "root" ] && runtime="sudo podman" || runtime="podman"
 
-    # Проверяем запущенные контейнеры
-    if $runtime ps --format "{{.Names}}" 2>/dev/null | grep -q "^systemd-$name$"; then
-        # Контейнер запущен, получаем время работы
-        local started_at=$($runtime inspect --format='{{.State.StartedAt}}' "systemd-$name" 2>/dev/null)
-        local uptime_str=""
-        
-        if [ -n "$started_at" ] && [ "$started_at" != "0001-01-01T00:00:00Z" ]; then
-            local start_epoch=$(date -d "$started_at" +%s 2>/dev/null)
-            local now_epoch=$(date +%s)
-            local diff=$((now_epoch - start_epoch))
-            if [ $diff -lt 60 ]; then uptime_str="${diff}s"
-            elif [ $diff -lt 3600 ]; then uptime_str="$((diff / 60))m"
-            else uptime_str="$((diff / 3600))h$(((diff % 3600) / 60))m"; fi
+    # Для rootless контейнеров (с префиксом systemd-)
+    if [ "$user" != "root" ]; then
+        if $runtime ps --format "{{.Names}}" 2>/dev/null | grep -q "^systemd-$name$"; then
+            local started_at=$($runtime inspect --format='{{.State.StartedAt}}' "systemd-$name" 2>/dev/null)
+            local uptime_str=""
+            
+            if [ -n "$started_at" ] && [ "$started_at" != "0001-01-01T00:00:00Z" ]; then
+                local start_epoch=$(date -d "$started_at" +%s 2>/dev/null)
+                local now_epoch=$(date +%s)
+                local diff=$((now_epoch - start_epoch))
+                if [ $diff -lt 60 ]; then uptime_str="${diff}s"
+                elif [ $diff -lt 3600 ]; then uptime_str="$((diff / 60))m"
+                else uptime_str="$((diff / 3600))h$(((diff % 3600) / 60))m"; fi
+            fi
+            
+            echo -e "${ICON_OK} ${NEON_GREEN}running${RESET} ${DIM_GRAY}(${uptime_str})${RESET}"
+            return
         fi
-        
-        echo -e "${ICON_OK} ${NEON_GREEN}running${RESET} ${DIM_GRAY}(${uptime_str})${RESET}"
-        return
+    else
+        # Для rootful контейнеров (без префикса)
+        if $runtime ps --format "{{.Names}}" 2>/dev/null | grep -q "^$name$"; then
+            local started_at=$($runtime inspect --format='{{.State.StartedAt}}' "$name" 2>/dev/null)
+            local uptime_str=""
+            
+            if [ -n "$started_at" ] && [ "$started_at" != "0001-01-01T00:00:00Z" ]; then
+                local start_epoch=$(date -d "$started_at" +%s 2>/dev/null)
+                local now_epoch=$(date +%s)
+                local diff=$((now_epoch - start_epoch))
+                if [ $diff -lt 60 ]; then uptime_str="${diff}s"
+                elif [ $diff -lt 3600 ]; then uptime_str="$((diff / 60))m"
+                else uptime_str="$((diff / 3600))h$(((diff % 3600) / 60))m"; fi
+            fi
+            
+            echo -e "${ICON_OK} ${NEON_GREEN}running${RESET} ${DIM_GRAY}(${uptime_str})${RESET}"
+            return
+        fi
     fi
     
     # Проверяем остановленные контейнеры
-    if $runtime ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^systemd-$name$"; then
-        echo -e "${ICON_FAIL} ${NEON_RED}stopped${RESET}"
+    if [ "$user" != "root" ]; then
+        if $runtime ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^systemd-$name$"; then
+            echo -e "${ICON_FAIL} ${NEON_RED}stopped${RESET}"
+        else
+            echo -e "${DIM_GRAY}● not created${RESET}"
+        fi
     else
-        echo -e "${DIM_GRAY}● not created${RESET}"
+        if $runtime ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^$name$"; then
+            echo -e "${ICON_FAIL} ${NEON_RED}stopped${RESET}"
+        else
+            echo -e "${DIM_GRAY}● not created${RESET}"
+        fi
     fi
 }
 
