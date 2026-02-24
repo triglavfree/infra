@@ -523,10 +523,10 @@ get_container_status() {
     local runtime=""
     [ "$user" = "root" ] && runtime="sudo podman" || runtime="podman"
 
-    if $runtime ps --format "{{.Names}}" 2>/dev/null | grep -q "^${name}$"; then
-        # Проверяем health (некоторые образы поддерживают)
-        local health=$($runtime inspect --format='{{.State.Health.Status}}' "$name" 2>/dev/null)
-        local started_at=$($runtime inspect --format='{{.State.StartedAt}}' "$name" 2>/dev/null)
+    # Проверяем запущенные контейнеры
+    if $runtime ps --format "{{.Names}}" 2>/dev/null | grep -q "^systemd-$name$"; then
+        # Контейнер запущен, получаем время работы
+        local started_at=$($runtime inspect --format='{{.State.StartedAt}}' "systemd-$name" 2>/dev/null)
         local uptime_str=""
         
         if [ -n "$started_at" ] && [ "$started_at" != "0001-01-01T00:00:00Z" ]; then
@@ -535,26 +535,18 @@ get_container_status() {
             local diff=$((now_epoch - start_epoch))
             if [ $diff -lt 60 ]; then uptime_str="${diff}s"
             elif [ $diff -lt 3600 ]; then uptime_str="$((diff / 60))m"
-            else uptime_str="$((diff / 3600))h$((diff % 3600 / 60))m"; fi
+            else uptime_str="$((diff / 3600))h$(((diff % 3600) / 60))m"; fi
         fi
         
-        # Если health не поддерживается, просто показываем running
-        if [ -n "$health" ] && [ "$health" != "no-check" ]; then
-            if [ "$health" = "healthy" ]; then
-                echo -e "${ICON_OK} ${NEON_GREEN}running${RESET} ${DIM_GRAY}(${uptime_str})${RESET}"
-            else
-                echo -e "${ICON_WARN} ${NEON_YELLOW}unhealthy${RESET} ${DIM_GRAY}(${uptime_str})${RESET}"
-            fi
-        else
-            # Здоровье не поддерживается - показываем просто running
-            echo -e "${ICON_OK} ${NEON_GREEN}running${RESET} ${DIM_GRAY}(${uptime_str})${RESET}"
-        fi
+        echo -e "${ICON_OK} ${NEON_GREEN}running${RESET} ${DIM_GRAY}(${uptime_str})${RESET}"
+        return
+    fi
+    
+    # Проверяем остановленные контейнеры
+    if $runtime ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^systemd-$name$"; then
+        echo -e "${ICON_FAIL} ${NEON_RED}stopped${RESET}"
     else
-        if $runtime ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^${name}$"; then
-            echo -e "${ICON_FAIL} ${NEON_RED}stopped${RESET}"
-        else
-            echo -e "${DIM_GRAY}● not created${RESET}"
-        fi
+        echo -e "${DIM_GRAY}● not created${RESET}"
     fi
 }
 
@@ -580,13 +572,25 @@ get_disk_type() {
     local disk=$1
     [ -z "$disk" ] && echo "unknown" && return
     
-    # Получаем базовое устройство (убираем номера партиций)
-    local base_disk=$(echo "$disk" | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+    # Получаем точку монтирования INFRA_DIR
+    local mount_point="$INFRA_DIR"
+    
+    # Получаем устройство для этой точки монтирования
+    local device=""
+    if command -v findmnt &>/dev/null; then
+        device=$(findmnt -no SOURCE "$mount_point" 2>/dev/null)
+    fi
+    
+    if [ -z "$device" ]; then
+        device=$(df "$mount_point" 2>/dev/null | tail -1 | awk '{print $1}')
+    fi
+    
+    # Убираем номера партиций
+    local base_disk=$(echo "$device" | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
     local dev_name=$(basename "$base_disk")
     
-    # Метод 1: Прямая проверка через lsblk (самый надежный)
+    # Проверяем через lsblk
     if command -v lsblk &>/dev/null; then
-        # Получаем ROTA для устройства
         local rotational=$(lsblk -d -o ROTA "/dev/$dev_name" 2>/dev/null | tail -1)
         if [ "$rotational" = "0" ]; then
             echo "SSD"
@@ -597,19 +601,7 @@ get_disk_type() {
         fi
     fi
     
-    # Метод 2: Проверка через sysfs (запасной вариант)
-    if [ -f "/sys/block/$dev_name/queue/rotational" ]; then
-        local rotational=$(cat "/sys/block/$dev_name/queue/rotational" 2>/dev/null)
-        if [ "$rotational" = "0" ]; then
-            echo "SSD"
-            return
-        elif [ "$rotational" = "1" ]; then
-            echo "HDD"
-            return
-        fi
-    fi
-    
-    # Метод 3: Проверка по модели (для NVMe и специфичных случаев)
+    # Проверяем по модели
     if command -v lsblk &>/dev/null; then
         local model=$(lsblk -d -o MODEL "/dev/$dev_name" 2>/dev/null | tail -1)
         if [[ "$model" == *"SSD"* ]] || [[ "$model" == *"NVMe"* ]] || [[ "$model" == *"Netac"* ]]; then
@@ -621,13 +613,6 @@ get_disk_type() {
         fi
     fi
     
-    # Метод 4: По имени устройства
-    if [[ "$dev_name" == *"nvme"* ]]; then
-        echo "NVMe"
-        return
-    fi
-    
-    # Если ничего не сработало
     echo "unknown"
 }
 
@@ -640,21 +625,21 @@ status_cmd() {
     local gitea_svc=$(get_service_status "gitea" "user")
     local gitea_ctr=$(get_container_status "gitea" "user")
     print_metric "Gitea" "$gitea_svc $gitea_ctr"
-    if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^gitea$"; then
-        local gitea_port=$(podman port gitea 2>/dev/null | grep "3000/tcp" | cut -d: -f2 || echo "3000")
-        local gitea_ssh=$(podman port gitea 2>/dev/null | grep "2222/tcp" | cut -d: -f2 || echo "2222")
-        if [ -n "$gitea_ssh" ]; then
-            print_metric "" "${MUTED_GRAY}→ http://${server_ip}:${gitea_port} | ssh://${server_ip}:${gitea_ssh}${RESET}"
-        else
-            print_metric "" "${MUTED_GRAY}→ http://${server_ip}:${gitea_port}${RESET}"
-        fi
+    
+    # Показываем ссылки для Gitea
+    if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^systemd-gitea$"; then
+        local gitea_port=$(podman port systemd-gitea 2>/dev/null | grep "3000/tcp" | cut -d: -f2 || echo "3000")
+        local gitea_ssh=$(podman port systemd-gitea 2>/dev/null | grep "22/tcp" | cut -d: -f2 || echo "2222")
+        print_metric "" "${MUTED_GRAY}→ http://${server_ip}:${gitea_port} | ssh://${server_ip}:${gitea_ssh}${RESET}"
     fi
-
+    
     local torr_svc=$(get_service_status "torrserver" "user")
     local torr_ctr=$(get_container_status "torrserver" "user")
     print_metric "TorrServer" "$torr_svc $torr_ctr"
-    if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^torrserver$"; then
-        local torr_port=$(podman port torrserver 2>/dev/null | grep "8090/tcp" | cut -d: -f2 || echo "8090")
+    
+    # Показываем ссылки для TorrServer
+    if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^systemd-torrserver$"; then
+        local torr_port=$(podman port systemd-torrserver 2>/dev/null | grep "8090/tcp" | cut -d: -f2 || echo "8090")
         print_metric "" "${MUTED_GRAY}→ http://${server_ip}:${torr_port}${RESET}"
     fi
 
