@@ -233,6 +233,37 @@ if ! sudo systemctl is-enabled podman-auto-update.timer >/dev/null 2>&1; then
     print_success "Rootful auto-update timer включен"
 fi
 
+# =============== TORRSERVER ROOTLESS (QUADLET) ===============
+print_step "Создание TorrServer"
+
+cat > "$QUADLET_USER_DIR/torrserver.container" <<EOF
+[Unit]
+Description=TorrServer Container
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Label=io.containers.autoupdate=registry
+Image=ghcr.io/yourok/torrserver:latest
+Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z:Z
+PublishPort=8090:8090
+
+[Service]
+Restart=always
+TimeoutStopSec=10
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target
+EOF
+
+chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/torrserver.container"
+systemctl --user daemon-reload
+systemctl --user start torrserver.service
+print_success "TorrServer запущен"
+print_url "http://${SERVER_IP}:8090/"
+
 # =============== GITEA ROOTLESS (QUADLET) ===============
 print_step "Создание Gitea"
 
@@ -280,37 +311,6 @@ else
     GITEA_READY=0
 fi
 print_url "http://${SERVER_IP}:3000/"
-
-# =============== TORRSERVER ROOTLESS (QUADLET) ===============
-print_step "Создание TorrServer"
-
-cat > "$QUADLET_USER_DIR/torrserver.container" <<EOF
-[Unit]
-Description=TorrServer Container
-After=network-online.target
-Wants=podman-auto-update.service
-
-[Container]
-Label=io.containers.autoupdate=registry
-Image=ghcr.io/yourok/torrserver:latest
-Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z:Z
-PublishPort=8090:8090
-
-[Service]
-Restart=always
-TimeoutStopSec=10
-Type=notify
-NotifyAccess=all
-
-[Install]
-WantedBy=default.target
-EOF
-
-chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/torrserver.container"
-systemctl --user daemon-reload
-systemctl --user start torrserver.service
-print_success "TorrServer запущен"
-print_url "http://${SERVER_IP}:8090/"
 
 # =============== RUNNER ROOTFUL (QUADLET) ===============
 print_step "Настройка Gitea Runner"
@@ -499,8 +499,8 @@ ICON_ARROW="▸"
 
 print_box() {
     local title="$1"
-    local time_str=$(date +%H:%M:%S)
-    local full_title="${title} ${time_str}"
+    local datetime=$(date "+%d.%m.%Y %H:%M:%S")  # 24.02.2026 15:35:00
+    local full_title="${title} ${datetime}"
     echo ""
     echo -e "${NEON_CYAN}╔══════════════════════════════════════════════════╗${RESET}"
     printf "${NEON_CYAN}║${RESET} ${BOLD}%-48s${RESET} ${NEON_CYAN}║${RESET}\n" "$full_title"
@@ -577,20 +577,40 @@ get_disk_type() {
     
     # Получаем устройство для этой точки монтирования
     local device=""
+    
+    # Метод 1: findmnt
     if command -v findmnt &>/dev/null; then
-        device=$(findmnt -no SOURCE "$mount_point" 2>/dev/null)
+        device=$(findmnt -no SOURCE "$mount_point" 2>/dev/null | head -1)
     fi
     
+    # Метод 2: df
     if [ -z "$device" ]; then
         device=$(df "$mount_point" 2>/dev/null | tail -1 | awk '{print $1}')
     fi
     
+    # Если это LVM (/dev/mapper/*), пытаемся найти физическое устройство
+    if [[ "$device" == *"/dev/mapper/"* ]] || [[ "$device" == *"/dev/dm-"* ]]; then
+        # Метод: через lsblk найти физическое устройство для LVM
+        if command -v lsblk &>/dev/null; then
+            # Получаем имя LVM тома
+            local lvm_name=$(basename "$device")
+            # Ищем физическое устройство через lsblk
+            local physical_dev=$(lsblk -no PKNAME "/dev/$lvm_name" 2>/dev/null | head -1)
+            if [ -n "$physical_dev" ]; then
+                device="/dev/$physical_dev"
+            fi
+        fi
+    fi
+    
     # Убираем номера партиций
-    local base_disk=$(echo "$device" | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+    local base_disk=$(echo "$device" | sed -E 's/[0-9]+$//' | sed -E 's/p[0-9]+$//')
     local dev_name=$(basename "$base_disk")
     
-    # Проверяем через lsblk
-    if command -v lsblk &>/dev/null; then
+    # Диагностика (можно удалить после отладки)
+    # echo "DEBUG: device=$device, base_disk=$base_disk, dev_name=$dev_name" >&2
+    
+    # Метод 1: Проверка через lsblk ROTA
+    if command -v lsblk &>/dev/null && [ -n "$dev_name" ]; then
         local rotational=$(lsblk -d -o ROTA "/dev/$dev_name" 2>/dev/null | tail -1)
         if [ "$rotational" = "0" ]; then
             echo "SSD"
@@ -601,8 +621,20 @@ get_disk_type() {
         fi
     fi
     
-    # Проверяем по модели
-    if command -v lsblk &>/dev/null; then
+    # Метод 2: Проверка через sysfs
+    if [ -n "$dev_name" ] && [ -f "/sys/block/$dev_name/queue/rotational" ]; then
+        local rotational=$(cat "/sys/block/$dev_name/queue/rotational" 2>/dev/null)
+        if [ "$rotational" = "0" ]; then
+            echo "SSD"
+            return
+        elif [ "$rotational" = "1" ]; then
+            echo "HDD"
+            return
+        fi
+    fi
+    
+    # Метод 3: Проверка по модели
+    if command -v lsblk &>/dev/null && [ -n "$dev_name" ]; then
         local model=$(lsblk -d -o MODEL "/dev/$dev_name" 2>/dev/null | tail -1)
         if [[ "$model" == *"SSD"* ]] || [[ "$model" == *"NVMe"* ]] || [[ "$model" == *"Netac"* ]]; then
             echo "SSD"
@@ -613,12 +645,24 @@ get_disk_type() {
         fi
     fi
     
+    # Метод 4: Прямая проверка всех дисков на наличие SSD
+    if command -v lsblk &>/dev/null; then
+        # Проверим все диски на наличие ROTA=0 (SSD)
+        local all_disks=$(lsblk -d -o NAME,ROTA,MODEL 2>/dev/null | grep -E "^sd|^nvme")
+        while IFS= read -r line; do
+            if echo "$line" | grep -q "0"; then
+                echo "SSD"
+                return
+            fi
+        done <<< "$all_disks"
+    fi
+    
     echo "unknown"
 }
 
 status_cmd() {
     clear
-    print_box "INFRASTRUCTURE STATUS v10.0.0"
+    print_box "INFRA STATUS v10.0.0"  # ← здесь вызов с датой внутри
     local server_ip=$(hostname -I | awk '{print $1}')
 
     print_section "Rootless Services (User: $USER)"
