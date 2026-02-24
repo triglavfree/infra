@@ -1,11 +1,12 @@
-[![Ubuntu](https://img.shields.io/badge/Ubuntu_Server-24.04_LTS-E95420?style=flat-square&logo=ubuntu)](https://github.com/canonical/ubuntu-server)
-[![Gitea](https://img.shields.io/badge/Gitea-1.25.4-609926?style=flat-square&logo=gitea)](https://github.com/go-gitea/gitea/releases/tag/v1.25.4)
-[![NetBird](https://img.shields.io/badge/NetBird-0.64.4-0066FF?style=flat-square&logo=netbird)](https://github.com/netbirdio/netbird/releases/latest)
-[![TorrServer](https://img.shields.io/badge/TorrServer-MatriX.139-FF6B6B?style=flat-square&logo=webtorrent)](https://github.com/YouROK/TorrServer/releases/latest)
-[![Podman](https://img.shields.io/badge/Podman-4.0+-892CA0?style=flat-square&logo=podman)](https://github.com/containers/podman/releases)
-
+[![Ubuntu](https://img.shields.io/badge/Ubuntu_Server-24.04_LTS-E95420?style=for-the-badge&logo=ubuntu&logoColor=orange)](https://ubuntu.com/download/server)
+[![Podman](https://img.shields.io/badge/Podman-4.9.3-892CA0?style=for-the-badge&logo=podman&logoColor=white)](https://podman.io/)
+[![Gitea](https://img.shields.io/badge/Gitea-1.25.4-609926?style=for-the-badge&logo=gitea&logoColor=white)](https://github.com/go-gitea/gitea/releases/tag/v1.25.4)
+[![NetBird](https://img.shields.io/badge/NetBird-0.65.3-0066FF?style=for-the-badge&logo=netbird&logoColor=white)](https://github.com/netbirdio/netbird/releases/latest)
+[![TorrServer](https://img.shields.io/badge/TorrServer-MatriX.139-FF6B6B?style=for-the-badge&logo=webtorrent&logoColor=white)](https://github.com/YouROK/TorrServer/releases/latest)
+[![Restic](https://img.shields.io/badge/Restic-0.18.1-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://github.com/restic/restic/releases/tag/v0.18.1)
 ---
-### ⚡ Быстрый старт (автономное развёртывание с флешки)
+
+### Быстрый старт
 
 <details>
 <summary>Отключить действие при закрытии крышки ноутбука на Ubuntu Server</summary>
@@ -59,6 +60,12 @@ sudo apt update && sudo apt full-upgrade -y
 sudo reboot && exit
 ```
 </details>
+
+### Скачать и сразу выполнить в bash 🚀
+```bash
+bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra_quadlet.sh)
+```
+
 <details>
 <summary>Подключите флешку:</summary>
 
@@ -83,10 +90,6 @@ sudo umount /mnt/usb
 ```
 </details>
 
-### Скачать и сразу выполнить в bash 🚀
-```bash
-bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra_quadlet.sh)
-```
 ### 🔐 Управление инфраструктурой
 
 ```bash
