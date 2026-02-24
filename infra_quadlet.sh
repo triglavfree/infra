@@ -579,19 +579,56 @@ get_service_status() {
 get_disk_type() {
     local disk=$1
     [ -z "$disk" ] && echo "unknown" && return
+    
+    # Получаем базовое устройство (убираем номера партиций)
+    local base_disk=$(echo "$disk" | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+    local dev_name=$(basename "$base_disk")
+    
+    # Метод 1: Прямая проверка через lsblk (самый надежный)
     if command -v lsblk &>/dev/null; then
-        local base_disk=$(basename "$disk" | sed 's/[0-9]*$//')
-        local rotational=$(lsblk -d -o ROTA "/dev/$base_disk" 2>/dev/null | tail -1)
-        [ "$rotational" = "0" ] && echo "SSD" || echo "HDD"
-    else
-        echo "unknown"
+        # Получаем ROTA для устройства
+        local rotational=$(lsblk -d -o ROTA "/dev/$dev_name" 2>/dev/null | tail -1)
+        if [ "$rotational" = "0" ]; then
+            echo "SSD"
+            return
+        elif [ "$rotational" = "1" ]; then
+            echo "HDD"
+            return
+        fi
     fi
-}
-
-get_backup_count() {
-    local count=0
-    [ -d "$BACKUP_DIR/snapshots" ] && count=$(find "$BACKUP_DIR/snapshots" -name "*.tar.gz" -type f 2>/dev/null | wc -l)
-    echo "$count"
+    
+    # Метод 2: Проверка через sysfs (запасной вариант)
+    if [ -f "/sys/block/$dev_name/queue/rotational" ]; then
+        local rotational=$(cat "/sys/block/$dev_name/queue/rotational" 2>/dev/null)
+        if [ "$rotational" = "0" ]; then
+            echo "SSD"
+            return
+        elif [ "$rotational" = "1" ]; then
+            echo "HDD"
+            return
+        fi
+    fi
+    
+    # Метод 3: Проверка по модели (для NVMe и специфичных случаев)
+    if command -v lsblk &>/dev/null; then
+        local model=$(lsblk -d -o MODEL "/dev/$dev_name" 2>/dev/null | tail -1)
+        if [[ "$model" == *"SSD"* ]] || [[ "$model" == *"NVMe"* ]] || [[ "$model" == *"Netac"* ]]; then
+            echo "SSD"
+            return
+        elif [[ "$model" == *"HDD"* ]]; then
+            echo "HDD"
+            return
+        fi
+    fi
+    
+    # Метод 4: По имени устройства
+    if [[ "$dev_name" == *"nvme"* ]]; then
+        echo "NVMe"
+        return
+    fi
+    
+    # Если ничего не сработало
+    echo "unknown"
 }
 
 status_cmd() {
@@ -605,7 +642,12 @@ status_cmd() {
     print_metric "Gitea" "$gitea_svc $gitea_ctr"
     if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^gitea$"; then
         local gitea_port=$(podman port gitea 2>/dev/null | grep "3000/tcp" | cut -d: -f2 || echo "3000")
-        print_metric "" "${MUTED_GRAY}http://${server_ip}:${gitea_port}${RESET}"
+        local gitea_ssh=$(podman port gitea 2>/dev/null | grep "2222/tcp" | cut -d: -f2 || echo "2222")
+        if [ -n "$gitea_ssh" ]; then
+            print_metric "" "${MUTED_GRAY}→ http://${server_ip}:${gitea_port} | ssh://${server_ip}:${gitea_ssh}${RESET}"
+        else
+            print_metric "" "${MUTED_GRAY}→ http://${server_ip}:${gitea_port}${RESET}"
+        fi
     fi
 
     local torr_svc=$(get_service_status "torrserver" "user")
@@ -613,7 +655,7 @@ status_cmd() {
     print_metric "TorrServer" "$torr_svc $torr_ctr"
     if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^torrserver$"; then
         local torr_port=$(podman port torrserver 2>/dev/null | grep "8090/tcp" | cut -d: -f2 || echo "8090")
-        print_metric "" "${MUTED_GRAY}http://${server_ip}:${torr_port}${RESET}"
+        print_metric "" "${MUTED_GRAY}→ http://${server_ip}:${torr_port}${RESET}"
     fi
 
     print_section "Rootful Services (System)"
@@ -621,7 +663,7 @@ status_cmd() {
     local runner_ctr=$(get_container_status "gitea-runner" "root")
     print_metric "Gitea Runner" "$runner_svc $runner_ctr"
     if sudo podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^gitea-runner$"; then
-        runner_reg=$(sudo podman inspect --format='{{.Config.Env}}' gitea-runner 2>/dev/null | grep -o 'GITEA_INSTANCE_URL=[^ ]*' | cut -d= -f2 | cut -d/ -f3 || echo "unknown")
+        local runner_reg=$(sudo podman inspect --format='{{.Config.Env}}' gitea-runner 2>/dev/null | grep -o 'GITEA_INSTANCE_URL=[^ ]*' | cut -d= -f2 | cut -d/ -f3 || echo "unknown")
         print_metric "" "${MUTED_GRAY}→ $runner_reg${RESET}"
     fi
 
@@ -629,8 +671,13 @@ status_cmd() {
     local netbird_ctr=$(get_container_status "netbird" "root")
     print_metric "NetBird VPN" "$netbird_svc $netbird_ctr"
     if sudo podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^netbird$"; then
-        local nb_ip=$(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
-        [ -n "$nb_ip" ] && print_metric "" "${MUTED_GRAY}IP: $nb_ip${RESET}" || print_metric "" "${NEON_YELLOW}Connecting...${RESET}"
+        local nb_ip=$(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 || echo "connecting...")
+        if [ "$nb_ip" != "connecting..." ]; then
+            print_metric "" "${MUTED_GRAY}→ IP: $nb_ip${RESET}"
+            print_metric "" "${MUTED_GRAY}→ https://app.netbird.io/peers${RESET} ${NEON_CYAN}[dashboard]${RESET}"
+        else
+            print_metric "" "${NEON_YELLOW}→ $nb_ip${RESET}"
+        fi
     fi
 
     print_section "Resources"
@@ -639,22 +686,55 @@ status_cmd() {
     local disk_dev=$(echo "$disk_info" | awk '{print $1}')
     local disk_type=$(get_disk_type "$disk_dev")
     local fs_type=$(df -T "$INFRA_DIR" 2>/dev/null | tail -1 | awk '{print $2}')
-    print_metric "Disk" "$disk_usage ${NEON_CYAN}[${disk_type}]${RESET} ${MUTED_GRAY}(${fs_type})${RESET}"
-
+    
+    # Цветная индикация типа диска
+    case "$disk_type" in
+        "SSD"|"NVMe")
+            disk_type_colored="${NEON_GREEN}${disk_type}${RESET}"
+            ;;
+        "HDD")
+            disk_type_colored="${NEON_YELLOW}${disk_type}${RESET}"
+            ;;
+        *)
+            disk_type_colored="${DIM_GRAY}${disk_type}${RESET}"
+            ;;
+    esac
+    
+    print_metric "Disk" "$disk_usage ${NEON_CYAN}[${disk_type_colored}]${RESET} ${MUTED_GRAY}(${fs_type})${RESET}"
+    
     local mem_info=$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}')
     print_metric "Memory" "$mem_info"
     
     local swap_info=$(free -h 2>/dev/null | awk '/^Swap:/ {if ($2 != "0B") print $3 "/" $2; else print "disabled"}')
     print_metric "Swap" "$swap_info"
+    
+    local bbr_status=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -o 'bbr' || echo "off")
+    if [ "$bbr_status" = "bbr" ]; then 
+        print_metric "BBR" "${NEON_GREEN}enabled${RESET}"
+    else 
+        print_metric "BBR" "${DIM_GRAY}disabled${RESET}"
+    fi
+    
+    local ctr_count=$(podman ps -q 2>/dev/null | wc -l)
+    local ctr_total=$(podman ps -aq 2>/dev/null | wc -l)
+    local root_ctr_count=$(sudo podman ps -q 2>/dev/null | wc -l)
+    local root_ctr_total=$(sudo podman ps -aq 2>/dev/null | wc -l)
+    print_metric "Containers" "${SOFT_WHITE}user:${RESET} ${NEON_CYAN}${ctr_count}${RESET}/${ctr_total} ${SOFT_WHITE}root:${RESET} ${NEON_CYAN}${root_ctr_count}${RESET}/${root_ctr_total}"
 
     print_section "Backup"
-    if [ -d "$BACKUP_DIR/snapshots" ]; then
-        local last_backup=$(ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | head -1 | xargs stat -c %y 2>/dev/null | cut -d. -f1)
-        local backup_count=$(get_backup_count)
+    if [ -d "$BACKUP_DIR/snapshots" ] || [ -f "$INFRA_DIR/.backup_configured" ]; then
+        local last_backup="never"
+        if [ -f "$INFRA_DIR/logs/backup.log" ]; then
+            last_backup=$(grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}" "$INFRA_DIR/logs/backup.log" 2>/dev/null | tail -1 | awk '{print $1 " " $2}' || echo "never")
+        fi
+        if [ -d "$BACKUP_DIR/snapshots" ] && [ "$last_backup" = "never" ]; then
+            last_backup=$(ls -t "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | head -1 | xargs stat -c %y 2>/dev/null | cut -d. -f1 || echo "never")
+        fi
+        local backup_count=$(ls -1 "$BACKUP_DIR/snapshots"/*.tar.gz 2>/dev/null | wc -l)
         print_metric "Status" "${ICON_OK} ${NEON_GREEN}configured${RESET}"
         print_metric "Last" "${last_backup:-never}"
         print_metric "Snapshots" "${NEON_CYAN}${backup_count}${RESET}"
-        print_metric "Setup" "${MUTED_GRAY}infra backup-setup${RESET}"
+        print_metric "Restic" "${MUTED_GRAY}infra backup-setup${RESET}"
     else
         print_metric "Status" "${DIM_GRAY}● not configured${RESET}"
         print_metric "Setup" "${MUTED_GRAY}infra backup-setup${RESET}"
