@@ -120,5 +120,9 @@ infra update
 infra clear
 ```
 > 💡 Команда `infra` доступна сразу после развёртывания (добавлена в `~/.bashrc`).
----
-Сделано с ❤️ и заботой о вашей инфраструктуре
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/triglavfree/infra/main/.github/heart.png" width="20" height="20" alt="heart" style="vertical-align: middle;">
+  Сделано с ❤️ и заботой о вашей инфраструктуре
+  <img src="https://raw.githubusercontent.com/triglavfree/infra/main/.github/heart.png" width="20" height="20" alt="heart" style="vertical-align: middle;">
+</p>
