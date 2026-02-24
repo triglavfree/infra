@@ -121,6 +121,15 @@ infra clear
 ```
 > 💡 Команда `infra` доступна сразу после развёртывания (добавлена в `~/.bashrc`).
 
+### 🙏 **Благодарности**
+
+- [Podman](https://podman.io/) — за безопасные контейнеры
+- [Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) — за интеграцию с systemd
+- [Gitea](https://gitea.io/) — за лёгкий Git сервер
+- [NetBird](https://netbird.io/) — за простой VPN
+- [TorrServer](https://github.com/YouROK/TorrServer) — за стриминг торрентов
+- [Restic](https://restic.net/) — за шифрованные бэкапы
+
 ---
 
 <p align="center">
