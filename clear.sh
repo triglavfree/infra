@@ -51,7 +51,7 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 
-# Подтверждение
+# Подтверждение (без цветов в read)
 print_header
 echo -e "  ${RED}${BOLD}ВНИМАНИЕ!${NC} Это удалит:"
 echo -e "  • Все контейнеры Podman (gitea, torrserver, gitea-runner, netbird)"
@@ -60,7 +60,8 @@ echo -e "  • Все данные в ~/infra/ (по желанию)"
 echo -e "  • Команду infra"
 echo -e "  • Cron задачи"
 echo ""
-read -rp "  Вы уверены? Введите ${RED}${BOLD}yes${NC} для подтверждения: " CONFIRM
+echo -e -n "  Вы уверены? Введите ${RED}${BOLD}yes${NC} для подтверждения: "
+read CONFIRM
 
 if [ "$CONFIRM" != "yes" ]; then
     echo -e "  ${ICON_WARN} ${YELLOW}Очистка отменена${NC}"
@@ -218,7 +219,8 @@ print_success "systemd перезагружен"
 # =============== УДАЛЕНИЕ ДАННЫХ ===============
 print_step "Удаление данных"
 
-read -rp "  Удалить директорию ${CYAN}$HOME/infra${NC} со всеми данными? [y/N]: " DEL_DATA
+echo -e -n "  Удалить директорию ${CYAN}$HOME/infra${NC} со всеми данными? [y/N]: "
+read DEL_DATA
 if [[ "$DEL_DATA" =~ ^[Yy]$ ]]; then
     # Удаляем директорию infra
     rm -rf "$HOME/infra" 2>/dev/null
