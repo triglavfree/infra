@@ -833,8 +833,12 @@ case "${1:-status}" in
         echo -e "${NEON_CYAN}▸ Создание бэкапа...${RESET}"
         if podman run --rm -v "$VOLUMES_DIR:/data:ro" -v "$BACKUP_DIR/snapshots:/backup:Z" docker.io/library/alpine:latest tar -czf "/backup/$(basename $SNAPSHOT)" -C /data . 2>/dev/null; then
             sudo chown $USER:$USER "$SNAPSHOT" 2>/dev/null
-            local size=$(du -h "$SNAPSHOT" | cut -f1)
-            echo -e "  ${ICON_OK} Локальный архив создан: $(basename $SNAPSHOT) ($size)"
+            size=$(du -h "$SNAPSHOT" 2>/dev/null | cut -f1)
+            if [ -n "$size" ]; then
+                echo -e "  ${ICON_OK} Локальный архив создан: $(basename $SNAPSHOT) ($size)"
+            else
+                echo -e "  ${ICON_OK} Локальный архив создан: $(basename $SNAPSHOT)"
+            fi
         else
             echo -e "  ${ICON_WARN} Директория volumes пуста"
         fi
