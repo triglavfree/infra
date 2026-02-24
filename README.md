@@ -1,4 +1,4 @@
-[![Ubuntu](https://img.shields.io/badge/Ubuntu_Server-24.04_LTS-E95420?style=for-the-badge&logo=ubuntu&logoColor=orange)](https://ubuntu.com/download/server)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu_Server-24.04.4_LTS-E95420?style=for-the-badge&logo=ubuntu&logoColor=orange)](https://ubuntu.com/download/server)
 [![Podman](https://img.shields.io/badge/Podman-4.9.3-892CA0?style=for-the-badge&logo=podman&logoColor=white)](https://podman.io/)
 [![Gitea](https://img.shields.io/badge/Gitea-1.25.4-609926?style=for-the-badge&logo=gitea&logoColor=white)](https://github.com/go-gitea/gitea/releases/tag/v1.25.4)
 [![NetBird](https://img.shields.io/badge/NetBird-0.65.3-0066FF?style=for-the-badge&logo=netbird&logoColor=white)](https://github.com/netbirdio/netbird/releases/latest)
