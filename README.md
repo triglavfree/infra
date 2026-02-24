@@ -91,6 +91,19 @@ sudo umount /mnt/usb
 ```
 </details>
 
+### 🕉️ Cтек технологий
+```txt
+🐧 Linux Kernel (спасибо Линусу!)
+├── 🐳 Podman 4.9.3
+│   ├── 📦 Quadlet (systemd интеграция)
+│   ├── 🏠 Gitea 1.25.4
+│   ├── 🎥 TorrServer MatriX.139
+│   ├── 🤖 Gitea Runner
+│   └── 🌐 NetBird 0.65.3
+├── 💾 Restic 0.18.1 (бэкапы)
+├── 🛡️ UFW + fail2ban (безопасность)
+└── 🚀 BBR (сетевая оптимизация)
+```
 ### 🔐 Управление инфраструктурой
 
 ```bash
