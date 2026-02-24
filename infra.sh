@@ -218,278 +218,6 @@ fi
 
 sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || true
 
-# =============== PODMAN AUTO-UPDATE ===============
-print_step "Настройка авто-обновления"
-
-if ! systemctl --user is-enabled podman-auto-update.timer >/dev/null 2>&1; then
-    systemctl --user enable podman-auto-update.timer 2>/dev/null || true
-    systemctl --user start podman-auto-update.timer 2>/dev/null || true
-    print_success "Rootless auto-update timer включен"
-fi
-
-if ! sudo systemctl is-enabled podman-auto-update.timer >/dev/null 2>&1; then
-    sudo systemctl enable podman-auto-update.timer 2>/dev/null || true
-    sudo systemctl start podman-auto-update.timer 2>/dev/null || true
-    print_success "Rootful auto-update timer включен"
-fi
-
-# =============== TORRSERVER ROOTLESS (QUADLET) ===============
-print_step "Создание TorrServer"
-
-cat > "$QUADLET_USER_DIR/torrserver.container" <<EOF
-[Unit]
-Description=TorrServer Container
-After=network-online.target
-Wants=podman-auto-update.service
-
-[Container]
-Label=io.containers.autoupdate=registry
-Image=ghcr.io/yourok/torrserver:latest
-Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z:Z
-PublishPort=8090:8090
-
-[Service]
-Restart=always
-TimeoutStopSec=10
-Type=notify
-NotifyAccess=all
-
-[Install]
-WantedBy=default.target
-EOF
-
-chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/torrserver.container"
-systemctl --user daemon-reload
-systemctl --user start torrserver.service
-print_success "TorrServer запущен"
-print_url "http://${SERVER_IP}:8090/"
-
-# =============== GITEA ROOTLESS (QUADLET) ===============
-print_step "Создание Gitea"
-
-cat > "$QUADLET_USER_DIR/gitea.container" <<EOF
-[Unit]
-Description=Gitea Container
-After=network-online.target
-Wants=podman-auto-update.service
-
-[Container]
-Label=io.containers.autoupdate=registry
-Image=docker.io/gitea/gitea:latest
-Volume=$CURRENT_HOME/infra/volumes/gitea:/data:Z
-PublishPort=3000:3000
-PublishPort=2222:22
-Environment=GITEA__server__ROOT_URL=http://$SERVER_IP:3000/
-Environment=GITEA__actions__ENABLED=true
-Environment=GITEA__repository_upload__ENABLED=true
-Environment=GITEA__repository_upload__MAX_FILES=1000
-Environment=GITEA__repository_upload__FILE_MAX_SIZE=5000
-
-[Service]
-Restart=always
-TimeoutStopSec=60
-Type=notify
-NotifyAccess=all
-
-[Install]
-WantedBy=default.target
-EOF
-
-chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/gitea.container"
-systemctl --user daemon-reload
-systemctl --user start gitea.service
-print_success "Gitea запущена"
-
-print_info "Настройте администратора Gitea"
-print_url "http://${SERVER_IP}:3000/"
-print_info "Ожидание 60 секунд для настройки..."
-print_info "После настройки API станет доступен"
-
-# Ждём 60 секунд, чтобы пользователь успел настроить Gitea
-sleep 60
-
-# Проверяем доступность API
-if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1; then
-    print_success "Gitea API доступен"
-    GITEA_READY=1
-else
-    print_warning "Gitea API всё ещё не отвечает"
-    print_info "Возможно, настройка ещё не завершена"
-    print_info "Продолжаем установку, но runner придётся настроить позже"
-    GITEA_READY=0
-fi
-
-# =============== RUNNER ROOTFUL (QUADLET) ===============
-print_step "Настройка Gitea Runner"
-
-if [ $GITEA_READY -eq 0 ]; then
-    print_warning "Gitea API не доступен"
-    echo ""
-    echo -e "  ${NEON_PURPLE}${BOLD}▸ ДЛЯ НАСТРОЙКИ RUNNER'А ТРЕБУЕТСЯ РАБОЧАЯ GITEA${RESET}"
-    echo ""
-    echo -e "  ${ICON_INFO} Сделайте следующее:"
-    echo -e "   1️⃣ Откройте: ${NEON_CYAN}http://$SERVER_IP:3000/${RESET}"
-    echo -e "   2️⃣ Завершите настройку администратора"
-    echo -e "   3️⃣ Перейдите в: ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
-    echo -e "   4️⃣ Создайте новый раннер и получите токен"
-    echo ""
-    read -rp "  Нажмите Enter, когда Gitea будет готова и вы получите токен... " -s
-    echo ""
-fi
-
-SKIP_RUNNER=0
-if sudo systemctl list-unit-files 2>/dev/null | grep -q "gitea-runner.service" || [ -f "$QUADLET_SYSTEM_DIR/gitea-runner.container" ]; then
-    print_info "Runner уже существует"
-    read -rp "  Пересоздать? [y/N]: " RECREATE
-    if [[ "$RECREATE" =~ ^[Yy]$ ]]; then
-        sudo systemctl stop gitea-runner.service 2>/dev/null || true
-        sudo podman stop gitea-runner 2>/dev/null || true
-        sudo podman rm gitea-runner 2>/dev/null || true
-        sudo rm -f "$QUADLET_SYSTEM_DIR/gitea-runner.container"
-        sudo rm -f /run/systemd/generator/gitea-runner.service 2>/dev/null
-        sudo systemctl daemon-reload
-    else
-        SKIP_RUNNER=1
-    fi
-fi
-
-if [ $SKIP_RUNNER -eq 0 ]; then
-    echo ""
-    echo -e "${NEON_PURPLE}${BOLD}▸ РЕГИСТРАЦИЯ RUNNER'А${RESET}"
-    echo ""
-    echo -e "  Откройте: ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
-    echo -e "  (если вы ещё не создали токен - сделайте это сейчас)"
-    echo ""
-    read -rp "  Registration Token: " RUNNER_TOKEN
-
-    if [ -n "$RUNNER_TOKEN" ]; then
-        sudo rm -rf /var/lib/gitea-runner
-        sudo mkdir -p /var/lib/gitea-runner
-        sudo chmod 755 /var/lib/gitea-runner
-
-        sudo tee "$QUADLET_SYSTEM_DIR/gitea-runner.container" > /dev/null <<EOF
-[Unit]
-Description=Gitea Runner
-After=network-online.target
-Wants=podman-auto-update.service
-
-[Container]
-Image=docker.io/gitea/act_runner:nightly
-ContainerName=gitea-runner
-Volume=/var/run/docker.sock:/var/run/docker.sock:Z
-Volume=/var/lib/gitea-runner:/data:Z
-Environment=GITEA_INSTANCE_URL=http://$SERVER_IP:3000
-Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
-Environment=GITEA_RUNNER_NAME=runner-$(hostname | cut -d. -f1)
-Exec=act_runner daemon
-
-AddCapability=SYS_ADMIN
-AddDevice=/dev/fuse
-
-[Service]
-Restart=always
-TimeoutStopSec=60
-Type=notify
-NotifyAccess=all
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        sudo chmod 644 "$QUADLET_SYSTEM_DIR/gitea-runner.container"
-        sudo systemctl restart podman.socket
-        sudo systemctl daemon-reload
-        sudo systemctl start gitea-runner.service
-
-        sleep 8
-        if sudo podman ps --format "{{.Names}}" | grep -q "^gitea-runner$"; then
-            print_success "Runner запущен"
-            print_info "Проверьте регистрацию в Gitea:"
-            print_url "http://$SERVER_IP:3000/-/admin/actions/runners"
-            sudo podman logs gitea-runner 2>&1 | tail -5
-        else
-            print_error "Ошибка запуска runner"
-        fi
-    else
-        print_info "Runner пропущен"
-    fi
-fi
-
-# =============== NETBIRD ROOTFUL (QUADLET) ===============
-print_step "Настройка NetBird"
-
-SKIP_NETBIRD=0
-if sudo systemctl list-unit-files 2>/dev/null | grep -q "netbird.service" || [ -f "$QUADLET_SYSTEM_DIR/netbird.container" ]; then
-    print_info "NetBird уже существует"
-    read -rp "  Пересоздать? [y/N]: " RECREATE_NB
-    if [[ "$RECREATE_NB" =~ ^[Yy]$ ]]; then
-        sudo systemctl stop netbird.service 2>/dev/null || true
-        sudo podman stop netbird 2>/dev/null || true
-        sudo podman rm netbird 2>/dev/null || true
-        sudo rm -f "$QUADLET_SYSTEM_DIR/netbird.container"
-        sudo rm -f /run/systemd/generator/netbird.service 2>/dev/null
-        sudo systemctl daemon-reload
-    else
-        SKIP_NETBIRD=1
-    fi
-fi
-
-if [ "${SKIP_NETBIRD:-0}" -eq 0 ]; then
-    echo ""
-    echo -e "${NEON_BLUE}${BOLD}▸ ПОДКЛЮЧЕНИЕ NETBIRD${RESET}"
-    echo -e "  Получить ключ: ${NEON_CYAN}https://app.netbird.io/setup-keys${RESET}"
-    read -rp "  Setup Key (Enter - пропустить): " NB_KEY
-
-    if [ -n "${NB_KEY:-}" ]; then
-        sudo rm -rf /var/lib/netbird
-        sudo mkdir -p /var/lib/netbird
-        sudo chmod 755 /var/lib/netbird
-
-        sudo tee "$QUADLET_SYSTEM_DIR/netbird.container" > /dev/null <<EOF
-[Unit]
-Description=NetBird VPN Container
-After=network-online.target
-Wants=podman-auto-update.service
-
-[Container]
-Image=docker.io/netbirdio/netbird:latest
-ContainerName=netbird
-Network=host
-AddDevice=/dev/net/tun
-Volume=/var/lib/netbird:/etc/netbird:Z
-Environment=NB_SETUP_KEY=$NB_KEY
-Environment=NB_MANAGEMENT_URL=https://api.netbird.io:443
-SecurityLabelDisable=true
-AddCapability=ALL
-
-[Service]
-Restart=always
-TimeoutStopSec=30
-Type=notify
-NotifyAccess=all
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        sudo chmod 644 "$QUADLET_SYSTEM_DIR/netbird.container"
-        sudo systemctl restart podman.socket
-        sudo systemctl daemon-reload
-        sudo systemctl start netbird.service
-
-        sleep 10
-        if sudo podman ps --format "{{.Names}}" | grep -q "^netbird$"; then
-            print_success "NetBird запущен"
-            NB_IP=$(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
-            [ -n "$NB_IP" ] && print_info "IP в сети NetBird: $NB_IP"
-        else
-            print_error "Ошибка запуска NetBird"
-        fi
-    else
-        print_info "NetBird пропущен"
-    fi
-fi
-
 # =============== CLI (ПОЛНАЯ ВЕРСИЯ) ===============
 cat > "$BIN_DIR/infra" <<'ENDOFCLI'
 #!/bin/bash
@@ -1021,6 +749,278 @@ ENDOFCLI
 
 chmod +x "$BIN_DIR/infra"
 sudo ln -sf "$BIN_DIR/infra" /usr/local/bin/infra 2>/dev/null || true
+
+# =============== PODMAN AUTO-UPDATE ===============
+print_step "Настройка авто-обновления"
+
+if ! systemctl --user is-enabled podman-auto-update.timer >/dev/null 2>&1; then
+    systemctl --user enable podman-auto-update.timer 2>/dev/null || true
+    systemctl --user start podman-auto-update.timer 2>/dev/null || true
+    print_success "Rootless auto-update timer включен"
+fi
+
+if ! sudo systemctl is-enabled podman-auto-update.timer >/dev/null 2>&1; then
+    sudo systemctl enable podman-auto-update.timer 2>/dev/null || true
+    sudo systemctl start podman-auto-update.timer 2>/dev/null || true
+    print_success "Rootful auto-update timer включен"
+fi
+
+# =============== TORRSERVER ROOTLESS (QUADLET) ===============
+print_step "Создание TorrServer"
+
+cat > "$QUADLET_USER_DIR/torrserver.container" <<EOF
+[Unit]
+Description=TorrServer Container
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Label=io.containers.autoupdate=registry
+Image=ghcr.io/yourok/torrserver:latest
+Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z:Z
+PublishPort=8090:8090
+
+[Service]
+Restart=always
+TimeoutStopSec=10
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target
+EOF
+
+chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/torrserver.container"
+systemctl --user daemon-reload
+systemctl --user start torrserver.service
+print_success "TorrServer запущен"
+print_url "http://${SERVER_IP}:8090/"
+
+# =============== GITEA ROOTLESS (QUADLET) ===============
+print_step "Создание Gitea"
+
+cat > "$QUADLET_USER_DIR/gitea.container" <<EOF
+[Unit]
+Description=Gitea Container
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Label=io.containers.autoupdate=registry
+Image=docker.io/gitea/gitea:latest
+Volume=$CURRENT_HOME/infra/volumes/gitea:/data:Z
+PublishPort=3000:3000
+PublishPort=2222:22
+Environment=GITEA__server__ROOT_URL=http://$SERVER_IP:3000/
+Environment=GITEA__actions__ENABLED=true
+Environment=GITEA__repository_upload__ENABLED=true
+Environment=GITEA__repository_upload__MAX_FILES=1000
+Environment=GITEA__repository_upload__FILE_MAX_SIZE=5000
+
+[Service]
+Restart=always
+TimeoutStopSec=60
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target
+EOF
+
+chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/gitea.container"
+systemctl --user daemon-reload
+systemctl --user start gitea.service
+print_success "Gitea запущена"
+
+print_info "Настройте администратора Gitea"
+print_url "http://${SERVER_IP}:3000/"
+print_info "Ожидание 60 секунд для настройки..."
+print_info "После настройки API станет доступен"
+
+# Ждём 60 секунд, чтобы пользователь успел настроить Gitea
+sleep 60
+
+# Проверяем доступность API
+if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1; then
+    print_success "Gitea API доступен"
+    GITEA_READY=1
+else
+    print_warning "Gitea API всё ещё не отвечает"
+    print_info "Возможно, настройка ещё не завершена"
+    print_info "Продолжаем установку, но runner придётся настроить позже"
+    GITEA_READY=0
+fi
+
+# =============== RUNNER ROOTFUL (QUADLET) ===============
+print_step "Настройка Gitea Runner"
+
+if [ $GITEA_READY -eq 0 ]; then
+    print_warning "Gitea API не доступен"
+    echo ""
+    echo -e "  ${NEON_PURPLE}${BOLD}▸ ДЛЯ НАСТРОЙКИ RUNNER'А ТРЕБУЕТСЯ РАБОЧАЯ GITEA${RESET}"
+    echo ""
+    echo -e "  ${ICON_INFO} Сделайте следующее:"
+    echo -e "   1️⃣ Откройте: ${NEON_CYAN}http://$SERVER_IP:3000/${RESET}"
+    echo -e "   2️⃣ Завершите настройку администратора"
+    echo -e "   3️⃣ Перейдите в: ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
+    echo -e "   4️⃣ Создайте новый раннер и получите токен"
+    echo ""
+    read -rp "  Нажмите Enter, когда Gitea будет готова и вы получите токен... " -s
+    echo ""
+fi
+
+SKIP_RUNNER=0
+if sudo systemctl list-unit-files 2>/dev/null | grep -q "gitea-runner.service" || [ -f "$QUADLET_SYSTEM_DIR/gitea-runner.container" ]; then
+    print_info "Runner уже существует"
+    read -rp "  Пересоздать? [y/N]: " RECREATE
+    if [[ "$RECREATE" =~ ^[Yy]$ ]]; then
+        sudo systemctl stop gitea-runner.service 2>/dev/null || true
+        sudo podman stop gitea-runner 2>/dev/null || true
+        sudo podman rm gitea-runner 2>/dev/null || true
+        sudo rm -f "$QUADLET_SYSTEM_DIR/gitea-runner.container"
+        sudo rm -f /run/systemd/generator/gitea-runner.service 2>/dev/null
+        sudo systemctl daemon-reload
+    else
+        SKIP_RUNNER=1
+    fi
+fi
+
+if [ $SKIP_RUNNER -eq 0 ]; then
+    echo ""
+    echo -e "${NEON_PURPLE}${BOLD}▸ РЕГИСТРАЦИЯ RUNNER'А${RESET}"
+    echo ""
+    echo -e "  Откройте: ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
+    echo -e "  (если вы ещё не создали токен - сделайте это сейчас)"
+    echo ""
+    read -rp "  Registration Token: " RUNNER_TOKEN
+
+    if [ -n "$RUNNER_TOKEN" ]; then
+        sudo rm -rf /var/lib/gitea-runner
+        sudo mkdir -p /var/lib/gitea-runner
+        sudo chmod 755 /var/lib/gitea-runner
+
+        sudo tee "$QUADLET_SYSTEM_DIR/gitea-runner.container" > /dev/null <<EOF
+[Unit]
+Description=Gitea Runner
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Image=docker.io/gitea/act_runner:nightly
+ContainerName=gitea-runner
+Volume=/var/run/docker.sock:/var/run/docker.sock:Z
+Volume=/var/lib/gitea-runner:/data:Z
+Environment=GITEA_INSTANCE_URL=http://$SERVER_IP:3000
+Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
+Environment=GITEA_RUNNER_NAME=runner-$(hostname | cut -d. -f1)
+Exec=act_runner daemon
+
+AddCapability=SYS_ADMIN
+AddDevice=/dev/fuse
+
+[Service]
+Restart=always
+TimeoutStopSec=60
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        sudo chmod 644 "$QUADLET_SYSTEM_DIR/gitea-runner.container"
+        sudo systemctl restart podman.socket
+        sudo systemctl daemon-reload
+        sudo systemctl start gitea-runner.service
+
+        sleep 8
+        if sudo podman ps --format "{{.Names}}" | grep -q "^gitea-runner$"; then
+            print_success "Runner запущен"
+            print_info "Проверьте регистрацию в Gitea:"
+            print_url "http://$SERVER_IP:3000/-/admin/actions/runners"
+            sudo podman logs gitea-runner 2>&1 | tail -5
+        else
+            print_error "Ошибка запуска runner"
+        fi
+    else
+        print_info "Runner пропущен"
+    fi
+fi
+
+# =============== NETBIRD ROOTFUL (QUADLET) ===============
+print_step "Настройка NetBird"
+
+SKIP_NETBIRD=0
+if sudo systemctl list-unit-files 2>/dev/null | grep -q "netbird.service" || [ -f "$QUADLET_SYSTEM_DIR/netbird.container" ]; then
+    print_info "NetBird уже существует"
+    read -rp "  Пересоздать? [y/N]: " RECREATE_NB
+    if [[ "$RECREATE_NB" =~ ^[Yy]$ ]]; then
+        sudo systemctl stop netbird.service 2>/dev/null || true
+        sudo podman stop netbird 2>/dev/null || true
+        sudo podman rm netbird 2>/dev/null || true
+        sudo rm -f "$QUADLET_SYSTEM_DIR/netbird.container"
+        sudo rm -f /run/systemd/generator/netbird.service 2>/dev/null
+        sudo systemctl daemon-reload
+    else
+        SKIP_NETBIRD=1
+    fi
+fi
+
+if [ "${SKIP_NETBIRD:-0}" -eq 0 ]; then
+    echo ""
+    echo -e "${NEON_BLUE}${BOLD}▸ ПОДКЛЮЧЕНИЕ NETBIRD${RESET}"
+    echo -e "  Получить ключ: ${NEON_CYAN}https://app.netbird.io/setup-keys${RESET}"
+    read -rp "  Setup Key (Enter - пропустить): " NB_KEY
+
+    if [ -n "${NB_KEY:-}" ]; then
+        sudo rm -rf /var/lib/netbird
+        sudo mkdir -p /var/lib/netbird
+        sudo chmod 755 /var/lib/netbird
+
+        sudo tee "$QUADLET_SYSTEM_DIR/netbird.container" > /dev/null <<EOF
+[Unit]
+Description=NetBird VPN Container
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Image=docker.io/netbirdio/netbird:latest
+ContainerName=netbird
+Network=host
+AddDevice=/dev/net/tun
+Volume=/var/lib/netbird:/etc/netbird:Z
+Environment=NB_SETUP_KEY=$NB_KEY
+Environment=NB_MANAGEMENT_URL=https://api.netbird.io:443
+SecurityLabelDisable=true
+AddCapability=ALL
+
+[Service]
+Restart=always
+TimeoutStopSec=30
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        sudo chmod 644 "$QUADLET_SYSTEM_DIR/netbird.container"
+        sudo systemctl restart podman.socket
+        sudo systemctl daemon-reload
+        sudo systemctl start netbird.service
+
+        sleep 10
+        if sudo podman ps --format "{{.Names}}" | grep -q "^netbird$"; then
+            print_success "NetBird запущен"
+            NB_IP=$(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+            [ -n "$NB_IP" ] && print_info "IP в сети NetBird: $NB_IP"
+        else
+            print_error "Ошибка запуска NetBird"
+        fi
+    else
+        print_info "NetBird пропущен"
+    fi
+fi
 
 # =============== CRON ===============
 print_step "Настройка cron"
