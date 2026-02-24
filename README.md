@@ -4,6 +4,7 @@
 [![NetBird](https://img.shields.io/badge/NetBird-0.65.3-0066FF?style=for-the-badge&logo=netbird&logoColor=white)](https://github.com/netbirdio/netbird/releases/latest)
 [![TorrServer](https://img.shields.io/badge/TorrServer-MatriX.139-FF6B6B?style=for-the-badge&logo=webtorrent&logoColor=white)](https://github.com/YouROK/TorrServer/releases/latest)
 [![Restic](https://img.shields.io/badge/Restic-0.18.1-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://github.com/restic/restic/releases/tag/v0.18.1)
+![Linux](https://img.shields.io/badge/Linus_Torvalds-🐧-FCC624?style=for-the-badge&logo=linux&logoColor=black)
 ---
 
 ### Быстрый старт
