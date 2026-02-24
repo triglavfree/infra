@@ -67,7 +67,7 @@ bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra_qu
 ```
 
 <details>
-<summary>Подключите флешку:</summary>
+<summary>c флешки:</summary>
 
 ```bash
 lsblk
