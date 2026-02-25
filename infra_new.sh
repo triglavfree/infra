@@ -213,6 +213,7 @@ EOFAIL
 else
     print_info "Bootstrap уже выполнен"
 fi
+
 # =============== 6. mkcert ===============
 print_step "Настройка локального HTTPS"
 
