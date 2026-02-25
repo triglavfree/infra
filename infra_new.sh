@@ -440,8 +440,7 @@ print_info "После настройки NPM: https://torrent.lab"
 # =============== GITEA ===============
 print_step "Создание Gitea"
 
-step "Создание Quadlet файла" "
-    cat > \"$QUADLET_USER_DIR/gitea.container\" <<EOF
+cat > "$QUADLET_USER_DIR/gitea.container" <<EOF
 [Unit]
 Description=Gitea Container
 After=network-online.target
@@ -453,34 +452,34 @@ Image=docker.io/gitea/gitea:latest
 Volume=$CURRENT_HOME/infra/volumes/gitea:/data:Z
 PublishPort=3000:3000
 PublishPort=2222:22
-Environment=GITEA__server__ROOT_URL=http://$SERVER_IP:3000
+Environment=GITEA__server__ROOT_URL=http://$SERVER_IP:3000/
 Environment=GITEA__actions__ENABLED=true
+Environment=GITEA__repository_upload__ENABLED=true
+Environment=GITEA__repository_upload__MAX_FILES=1000
+Environment=GITEA__repository_upload__FILE_MAX_SIZE=5000
 
 [Service]
 Restart=always
+TimeoutStopSec=60
 Type=notify
 NotifyAccess=all
 
 [Install]
 WantedBy=default.target
 EOF
-    chown $CURRENT_USER:$CURRENT_USER \"$QUADLET_USER_DIR/gitea.container\"
-"
 
-step "Запуск Gitea" "
-    systemctl --user daemon-reload
-    systemctl --user start gitea.service
-"
-
+chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/gitea.container"
+systemctl --user daemon-reload
+systemctl --user start gitea.service
 print_success "Gitea запущена"
 print_info "Для настройки: http://$SERVER_IP:3000"
 print_info "После настройки NPM: https://git.lab"
 
-print_info "Ожидание 60 секунд для инициализации Gitea..."
-sleep 60
-
 # =============== GITEA RUNNER ===============
 print_step "Настройка Gitea Runner"
+
+print_info "Ожидание 45 секунд для инициализации Gitea..."
+sleep 45
 
 if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1; then
     print_success "Gitea API доступен"
@@ -507,10 +506,10 @@ if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1
     done
     
     if [ -n "$RUNNER_TOKEN" ]; then
-        step "Создание директории" "sudo mkdir -p /var/lib/gitea-runner && sudo chmod 755 /var/lib/gitea-runner"
+        sudo mkdir -p /var/lib/gitea-runner
+        sudo chmod 755 /var/lib/gitea-runner
         
-        step "Создание Quadlet файла runner" "
-            sudo tee \"$QUADLET_SYSTEM_DIR/gitea-runner.container\" > /dev/null <<EOF
+        sudo tee "$QUADLET_SYSTEM_DIR/gitea-runner.container" > /dev/null <<EOF
 [Unit]
 Description=Gitea Runner
 After=network-online.target gitea.service
@@ -529,21 +528,19 @@ AddDevice=/dev/fuse
 
 [Service]
 Restart=always
+TimeoutStopSec=60
 Type=notify
 NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
 EOF
-            sudo chmod 644 \"$QUADLET_SYSTEM_DIR/gitea-runner.container\"
-        "
+
+        sudo chmod 644 "$QUADLET_SYSTEM_DIR/gitea-runner.container"
+        sudo systemctl daemon-reload
+        sudo systemctl start gitea-runner.service
         
-        step "Запуск runner" "
-            sudo systemctl daemon-reload
-            sudo systemctl start gitea-runner.service
-            sleep 5
-        "
-        
+        sleep 5
         if sudo podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^gitea-runner$"; then
             print_success "Gitea Runner запущен и зарегистрирован"
         else
@@ -553,6 +550,7 @@ EOF
 else
     print_warning "Gitea API не доступен. Runner можно настроить позже командой:"
     print_info "  sudo ./setup-runner.sh"
+    print_info "Или вручную после запуска Gitea"
 fi
 
 # =============== NETBIRD ===============
