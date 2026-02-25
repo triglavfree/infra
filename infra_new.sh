@@ -478,8 +478,8 @@ print_info "После настройки NPM: https://git.lab"
 # =============== GITEA RUNNER ===============
 print_step "Настройка Gitea Runner"
 
-print_info "Ожидание 45 секунд для инициализации Gitea..."
-sleep 45
+print_info "Ожидание 60 секунд для инициализации Gitea..."
+sleep 60
 
 if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1; then
     print_success "Gitea API доступен"
