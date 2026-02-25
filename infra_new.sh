@@ -892,7 +892,7 @@ print_header "🚀 ИНФРАСТРУКТУРА ПОЛНОСТЬЮ ГОТОВА 
 cat <<EOF
 
 ${NEON_GREEN}╔══════════════════════════════════════════════════════════╗${RESET}
-${NEON_GREEN}║           🔗 ССЫЛКИ ДОСТУПА (ДОБАВЬ В /ETC/HOSTS)      ║${RESET}
+${NEON_GREEN}║            ССЫЛКИ ДОСТУПА (ДОБАВЬ В /ETC/HOSTS)          ║${RESET}
 ${NEON_GREEN}╚══════════════════════════════════════════════════════════╝${RESET}
 ${MUTED_GRAY}  $SERVER_IP passbolt.lab git.lab backup.lab home.lab torrent.lab keys.lab${RESET}
 
