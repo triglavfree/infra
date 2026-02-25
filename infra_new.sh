@@ -58,7 +58,7 @@ if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
     exit 1
 fi
 
-print_header "🚀 INFRASTRUCTURE v11.0.5 (ФИНАЛЬНАЯ)"
+print_header " INFRASTRUCTURE v11.0.5 (ФИНАЛЬНАЯ)"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
 # =============== ДИРЕКТОРИИ ===============
