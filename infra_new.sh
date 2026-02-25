@@ -165,29 +165,20 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
             usermod --add-subuids 100000-165535 --add-subgids 100000-165535 '$CURRENT_USER' 2>/dev/null || true
         fi
 
-        # UFW (ТИХО! БЕЗ ВЫВОДА!)
-        sed -i 's/DEFAULT_FORWARD_POLICY=\"DROP\"/DEFAULT_FORWARD_POLICY=\"ACCEPT\"/' /etc/default/ufw
-        ufw --force reset >/dev/null 2>&1
-        ufw default deny incoming >/dev/null 2>&1
-        ufw default allow outgoing >/dev/null 2>&1
-        ufw default allow routed >/dev/null 2>&1
+        # UFW (МАКСИМАЛЬНО ТИХАЯ ВЕРСИЯ)
+        sed -i 's/DEFAULT_FORWARD_POLICY=\"DROP\"/DEFAULT_FORWARD_POLICY=\"ACCEPT\"/' /etc/default/ufw 2>/dev/null
+        yes | ufw reset 2>/dev/null
+        ufw default deny incoming 2>/dev/null
+        ufw default allow outgoing 2>/dev/null
+        ufw default allow routed 2>/dev/null
         
-        ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1
-        ufw allow 3000/tcp comment 'Gitea HTTP' >/dev/null 2>&1
-        ufw allow 3001/tcp comment 'Homepage' >/dev/null 2>&1
-        ufw allow 2222/tcp comment 'Gitea SSH' >/dev/null 2>&1
-        ufw allow 8090/tcp comment 'TorrServer' >/dev/null 2>&1
-        ufw allow 8080/tcp comment 'Passbolt' >/dev/null 2>&1
-        ufw allow 9898/tcp comment 'Backrest' >/dev/null 2>&1
-        ufw allow 8000/tcp comment 'Restic REST' >/dev/null 2>&1
-        ufw allow 81/tcp comment 'Nginx Proxy Manager Admin' >/dev/null 2>&1
-        ufw allow 80/tcp comment 'HTTP' >/dev/null 2>&1
-        ufw allow 443/tcp comment 'HTTPS' >/dev/null 2>&1
-        ufw allow 51820/udp comment 'WireGuard/NetBird' >/dev/null 2>&1
-        ufw allow 8082/tcp comment 'Faucet Admin' >/dev/null 2>&1
-        ufw allow 8083/tcp comment 'Faucet MCP' >/dev/null 2>&1
+        # Все порты тихо
+        for port in 22 3000 3001 2222 8090 8080 9898 8000 81 80 443 51820 8082 8083; do
+            ufw allow \$port/tcp 2>/dev/null
+        done
+        ufw allow 51820/udp 2>/dev/null
         
-        ufw --force enable >/dev/null 2>&1
+        yes | ufw enable 2>/dev/null
 
         # fail2ban
         cat > /etc/fail2ban/jail.local <<'EOFAIL'
