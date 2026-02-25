@@ -1,17 +1,23 @@
 #!/bin/bash
 set -uo pipefail
 # =============================================================================
-# INFRASTRUCTURE v11.0.4 (ОПТИМИЗИРОВАННАЯ ФИНАЛЬНАЯ)
+# INFRASTRUCTURE v11.0.5 (ФИНАЛЬНАЯ СТАБИЛЬНАЯ)
 # =============================================================================
-# 🚀 Быстрая установка полного стека сервисов в Podman/Quadlet
-# 📦 Состав: Passbolt, Gitea+Runner, Backrest, TorrServer, Homepage,
-#           Nginx Proxy Manager, Restic REST, NetBird
-# 🔒 Локальный HTTPS через mkcert
-# 📊 Красивый дашборд с погодой
-# 🧹 Полная очистка при удалении
+# Совместная работа команды ❤️
+# 
+# ✅ Passbolt — менеджер паролей
+# ✅ secretctl — API-ключи с Web UI и Windows GUI
+# ✅ Backrest — управление бэкапами
+# ✅ Gitea + Runner — Git с CI/CD
+# ✅ TorrServer — торрент-стриминг
+# ✅ Homepage — красивый дашборд с погодой
+# ✅ Nginx Proxy Manager — reverse proxy с GUI
+# ✅ NetBird VPN — доступ из любой точки
+# ✅ Restic REST — хранилище бэкапов
+# ✅ mkcert — локальный HTTPS
 # =============================================================================
 
-# =============== 1. КОНФИГУРАЦИЯ ===============
+# Цвета (наша гордость!)
 if [ -t 1 ]; then
     ncolors=$(tput colors 2>/dev/null || echo 0)
     if [ $ncolors -ge 256 ]; then
@@ -38,7 +44,6 @@ CURRENT_UID=$(id -u "$CURRENT_USER")
 CURRENT_HOME="$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-# =============== 2. ФУНКЦИИ ВЫВОДА ===============
 print_header() { echo ""; echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"; echo -e "${NEON_CYAN}${BOLD}  $1${RESET}"; echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"; echo ""; }
 print_step() { echo ""; echo -e "${NEON_CYAN}${BOLD}▸${RESET} ${SOFT_WHITE}${BOLD}$1${RESET}"; echo -e "${DIM_GRAY}  $(printf '─%.0s' $(seq 1 40))${RESET}"; }
 print_success() { echo -e "  ${NEON_GREEN}✓${RESET} ${SOFT_WHITE}$1${RESET}"; }
@@ -47,55 +52,16 @@ print_error() { echo -e "  ${NEON_RED}✗${RESET} ${BOLD}$1${RESET}" >&2; }
 print_info() { echo -e "  ${NEON_BLUE}ℹ${RESET} ${MUTED_GRAY}$1${RESET}"; }
 print_url() { echo -e "  ${NEON_CYAN}➜${RESET} ${BOLD}${NEON_CYAN}$1${RESET}"; }
 
-# =============== 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===============
-check_deps() {
-    local deps=("podman" "curl" "wget" "openssl" "ufw")
-    for dep in "${deps[@]}"; do
-        if ! command -v $dep &> /dev/null; then
-            print_warning "$dep не найден, будет установлен"
-        fi
-    done
-}
-
-wait_for_service() {
-    local url=$1
-    local timeout=${2:-30}
-    local interval=2
-    local elapsed=0
-    while [ $elapsed -lt $timeout ]; do
-        if curl -sf "$url" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep $interval
-        elapsed=$((elapsed + interval))
-    done
-    return 1
-}
-
-get_container_ip() {
-    local container=$1
-    sudo podman inspect "$container" 2>/dev/null | grep -o '"IPAddress": "[^"]*"' | head -1 | cut -d'"' -f4
-}
-
-format_status() {
-    case $1 in
-        active|running) echo -e "${NEON_GREEN}●${RESET} ${NEON_GREEN}$1${RESET}" ;;
-        inactive|stopped) echo -e "${NEON_RED}●${RESET} ${NEON_RED}$1${RESET}" ;;
-        *) echo -e "${DIM_GRAY}● not created${RESET}" ;;
-    esac
-}
-
-# =============== 4. ПРОВЕРКА ПРАВ ===============
+# Проверка прав
 if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
     print_error "Запускайте от обычного пользователя с sudo!"
     exit 1
 fi
 
-print_header "INFRASTRUCTURE v11.0.4 (ОПТИМИЗИРОВАННАЯ)"
+print_header "🚀 INFRASTRUCTURE v11.0.5 (ФИНАЛЬНАЯ)"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
-check_deps
 
-# =============== 5. ДИРЕКТОРИИ ===============
+# =============== ДИРЕКТОРИИ ===============
 print_step "Создание структуры"
 
 INFRA_DIR="$CURRENT_HOME/infra"
@@ -107,7 +73,6 @@ CERT_DIR="$INFRA_DIR/certs"
 QUADLET_USER_DIR="$CURRENT_HOME/.config/containers/systemd"
 QUADLET_SYSTEM_DIR="/etc/containers/systemd"
 
-# Списки директорий
 USER_DIRS=(
     "$INFRA_DIR" "$VOLUMES_DIR" "$BIN_DIR" "$LOGS_DIR" "$BACKUP_DIR"
     "$BACKUP_DIR/cache" "$BACKUP_DIR/snapshots" "$CERT_DIR"
@@ -137,7 +102,7 @@ done
 
 print_success "Директории созданы"
 
-# =============== 6. BOOTSTRAP ===============
+# =============== BOOTSTRAP ===============
 print_step "Подготовка системы"
 
 if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
@@ -151,7 +116,7 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq >/dev/null 2>&1
         apt-get upgrade -y -qq >/dev/null 2>&1 || true
-        apt-get install -y -qq uidmap slirp4netns fuse-overlayfs curl openssl ufw fail2ban apache2-utils argon2 jq wget >/dev/null 2>&1 || true
+        apt-get install -y -qq uidmap slirp4netns fuse-overlayfs curl openssl ufw fail2ban apache2-utils argon2 jq wget golang >/dev/null 2>&1 || true
 
         # Swap
         if [ ! -f /swapfile ] && [ \$(free | grep -c Swap) -eq 0 ] || [ \$(free | awk '/^Swap:/ {print \$2}') -eq 0 ]; then
@@ -183,8 +148,7 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
         ufw default allow outgoing >/dev/null 2>&1
         ufw default allow routed >/dev/null 2>&1
         
-        # Все порты одним списком
-        for port in 22 3000 3001 2222 8090 8080 9898 8000 81 80 443 51820; do
+        for port in 22 3000 3001 2222 8090 8080 9898 8000 81 80 443 51820 8082; do
             ufw allow $port/tcp 2>/dev/null || ufw allow $port/udp 2>/dev/null
         done
         
@@ -215,7 +179,7 @@ else
     print_info "Bootstrap уже выполнен"
 fi
 
-# =============== 7. mkcert ===============
+# =============== mkcert ===============
 print_step "Настройка локального HTTPS"
 
 if ! command -v mkcert &> /dev/null; then
@@ -228,12 +192,12 @@ mkcert -install
 mkcert -key-file "$CERT_DIR/lab-key.pem" \
        -cert-file "$CERT_DIR/lab-cert.pem" \
        localhost 127.0.0.1 $SERVER_IP \
-       passbolt.lab git.lab backup.lab home.lab torrent.lab \
+       passbolt.lab git.lab backup.lab home.lab torrent.lab keys.lab \
        $(hostname) $(hostname).local
 
 print_success "SSL сертификаты созданы"
 
-# =============== 8. CLI (ОПТИМИЗИРОВАННЫЙ) ===============
+# =============== CLI ===============
 print_step "Установка CLI"
 
 cat > "$BIN_DIR/infra" <<'ENDOFCLI'
@@ -241,7 +205,7 @@ cat > "$BIN_DIR/infra" <<'ENDOFCLI'
 INFRA_DIR="$HOME/infra"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-# Цвета (из основного скрипта)
+# Цвета
 NEON_CYAN="\e[36m"; NEON_GREEN="\e[32m"; NEON_YELLOW="\e[33m"
 NEON_RED="\e[31m"; NEON_PURPLE="\e[35m"; NEON_BLUE="\e[34m"
 SOFT_WHITE="\e[97m"; MUTED_GRAY="\e[90m"; DIM_GRAY="\e[2m"
@@ -251,12 +215,8 @@ ICON_OK="${NEON_GREEN}●${RESET}"; ICON_FAIL="${NEON_RED}●${RESET}"
 ICON_WARN="${NEON_YELLOW}●${RESET}"; ICON_INFO="${NEON_BLUE}●${RESET}"
 ICON_ARROW="▸"
 
-# Универсальная функция получения статуса
 get_status() {
-    local name=$1
-    local type=$2
-    local user=$3
-    
+    local name=$1 type=$2 user=$3
     case $type in
         service)
             if [ "$user" = "root" ]; then
@@ -293,60 +253,51 @@ format_status() {
 status_cmd() {
     clear
     echo -e "${NEON_CYAN}╔══════════════════════════════════════════════════╗${RESET}"
-    echo -e "${NEON_CYAN}║${RESET} ${BOLD}INFRA STATUS v11.0.4${RESET}"
+    echo -e "${NEON_CYAN}║${RESET} ${BOLD}INFRA STATUS v11.0.5${RESET}"
     echo -e "${NEON_CYAN}╚══════════════════════════════════════════════════╝${RESET}"
 
-    # Списки сервисов
-    declare -A rootless_services=( [gitea]="https://git.lab" [torrserver]="https://torrent.lab" [homepage]="https://home.lab" )
-    declare -A rootful_services=( [gitea-runner]="" [netbird]="" [nginx-proxy-manager]="http://$SERVER_IP:81" )
-    declare -A backup_services=( [rest-server]="http://$SERVER_IP:8000 (basic auth)" [passbolt]="https://passbolt.lab" [backrest]="https://backup.lab" )
+    declare -A services=(
+        [gitea]="user:https://git.lab"
+        [torrserver]="user:https://torrent.lab"
+        [homepage]="user:https://home.lab"
+        [gitea-runner]="root:"
+        [netbird]="root:"
+        [nginx-proxy-manager]="root:http://$SERVER_IP:81"
+        [rest-server]="root:http://$SERVER_IP:8000 (basic auth)"
+        [passbolt]="root:https://passbolt.lab"
+        [backrest]="root:https://backup.lab"
+        [secretctl]="user:https://keys.lab"
+    )
 
-    print_section() {
-        echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}$1${RESET}"
+    declare -A sections=(
+        ["Rootless Services"]="gitea torrserver homepage secretctl"
+        ["Rootful Services"]="gitea-runner netbird nginx-proxy-manager"
+        ["Backup & Security"]="rest-server passbolt backrest"
+    )
+
+    for section in "Rootless Services" "Rootful Services" "Backup & Security"; do
+        echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}$section${RESET}"
         echo -e "${DIM_GRAY}──────────────────────────────────────────────────${RESET}"
-    }
-
-    print_metric() { printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "$1" "$2"; }
-
-    # Rootless
-    print_section "Rootless Services"
-    for svc in "${!rootless_services[@]}"; do
-        svc_status=$(format_status "$(get_status $svc service user)")
-        ctr_status=$(format_status "$(get_status $svc container user)")
-        print_metric "$svc" "$svc_status $ctr_status"
-        [ -n "${rootless_services[$svc]}" ] && print_metric "" "${MUTED_GRAY}→ ${rootless_services[$svc]}${RESET}"
+        
+        for svc in ${sections[$section]}; do
+            IFS=':' read -r user url <<< "${services[$svc]}"
+            svc_status=$(format_status "$(get_status $svc service $user)")
+            ctr_status=$(format_status "$(get_status $svc container $user)")
+            printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "$svc" "$svc_status $ctr_status"
+            [ -n "$url" ] && printf "                ${MUTED_GRAY}→ %s${RESET}\n" "$url"
+        done
     done
 
-    # Rootful
-    print_section "Rootful Services"
-    for svc in "${!rootful_services[@]}"; do
-        svc_status=$(format_status "$(get_status $svc service root)")
-        ctr_status=$(format_status "$(get_status $svc container root)")
-        print_metric "$svc" "$svc_status $ctr_status"
-        [ -n "${rootful_services[$svc]}" ] && print_metric "" "${MUTED_GRAY}→ ${rootful_services[$svc]}${RESET}"
-    done
-
-    # Backup & Security
-    print_section "Backup & Security"
-    for svc in "${!backup_services[@]}"; do
-        svc_status=$(format_status "$(get_status $svc service root)")
-        ctr_status=$(format_status "$(get_status $svc container root)")
-        print_metric "$svc" "$svc_status $ctr_status"
-        [ -n "${backup_services[$svc]}" ] && print_metric "" "${MUTED_GRAY}→ ${backup_services[$svc]}${RESET}"
-    done
-
-    # Resources
-    print_section "Resources"
-    print_metric "Disk" "$(df -h "$INFRA_DIR" 2>/dev/null | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}')"
-    print_metric "Memory" "$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}')"
-    print_metric "Swap" "$(free -h 2>/dev/null | awk '/^Swap:/ {if ($2 != "0B") print $3 "/" $2; else print "disabled"}')"
-    print_metric "Containers" "user: $(podman ps -q 2>/dev/null | wc -l), system: $(sudo podman ps -q 2>/dev/null | wc -l)"
+    echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}Resources${RESET}"
+    echo -e "${DIM_GRAY}──────────────────────────────────────────────────${RESET}"
+    printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "Disk" "$(df -h "$INFRA_DIR" 2>/dev/null | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}')"
+    printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "Memory" "$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}')"
+    printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "Containers" "user: $(podman ps -q 2>/dev/null | wc -l), system: $(sudo podman ps -q 2>/dev/null | wc -l)"
 
     echo -e "\n${DIM_GRAY}──────────────────────────────────────────────────${RESET}"
     echo -e "${MUTED_GRAY}Commands: ${NEON_CYAN}status${RESET}|${NEON_CYAN}start${RESET}|${NEON_CYAN}stop${RESET}|${NEON_CYAN}restart${RESET}|${NEON_CYAN}logs${RESET}|${NEON_CYAN}clear${RESET}"
 }
 
-# Очистка (полная)
 clear_cmd() {
     echo -e "${NEON_RED}▸ ПОЛНОЕ УДАЛЕНИЕ ИНФРАСТРУКТУРЫ${RESET}"
     read -rp "  Вы уверены? Все данные будут удалены [yes/N]: " CONFIRM
@@ -373,16 +324,13 @@ clear_cmd() {
         sudo rm -rf "$HOME/infra" /var/lib/gitea-runner /var/lib/netbird /var/lib/rest-server /var/lib/passbolt /var/lib/backrest
     fi
 
-    echo -e "  ${NEON_YELLOW}▸ Удаление CLI...${RESET}"
     sudo rm -f /usr/local/bin/infra
     rm -f "$HOME/infra/bin/infra"
-
     echo -e "\n${NEON_GREEN}${BOLD}╔════════════════════════════════════════════════╗${RESET}"
-    echo -e "${NEON_GREEN}${BOLD}║     ИНФРАСТРУКТУРА ПОЛНОСТЬЮ УДАЛЕНА        ║${RESET}"
+    echo -e "${NEON_GREEN}${BOLD}║        ИНФРАСТРУКТУРА ПОЛНОСТЬЮ УДАЛЕНА        ║${RESET}"
     echo -e "${NEON_GREEN}${BOLD}╚════════════════════════════════════════════════╝${RESET}"
 }
 
-# Обработка команд
 case "${1:-status}" in
     status) status_cmd ;;
     logs) 
@@ -422,54 +370,566 @@ chmod +x "$BIN_DIR/infra"
 sudo ln -sf "$BIN_DIR/infra" /usr/local/bin/infra 2>/dev/null || true
 print_success "CLI установлен"
 
-# =============== 9. УСТАНОВКА СЕРВИСОВ ===============
-# (блоки TorrServer, Gitea, Runner, NetBird, Restic, Passbolt, Backrest, NPM, Homepage
-#  остаются без изменений из предыдущей версии - они уже оптимизированы)
+# =============== TORRSERVER ===============
+print_step "Создание TorrServer"
+cat > "$QUADLET_USER_DIR/torrserver.container" <<EOF
+[Unit]
+Description=TorrServer Container
+After=network-online.target
+Wants=podman-auto-update.service
 
-# [Здесь вставляются все блоки установки сервисов из v11.0.3]
-# Они не дублируются в этом ответе для краткости, но в реальном скрипте они есть
+[Container]
+Label=io.containers.autoupdate=registry
+Image=ghcr.io/yourok/torrserver:latest
+Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z:Z
+PublishPort=8090:8090
 
-# =============== 10. ФИНАЛЬНЫЙ ВЫВОД ===============
-print_header "🚀 ИНФРАСТРУКТУРА ГОТОВА v11.0.4"
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
 
-declare -A FINAL_URLS=(
-    ["Homepage"]="https://home.lab"
-    ["Passbolt"]="https://passbolt.lab"
-    ["Gitea"]="https://git.lab"
-    ["Backrest"]="https://backup.lab"
-    ["TorrServer"]="https://torrent.lab"
-    ["Nginx Proxy Manager"]="http://$SERVER_IP:81"
-    ["Restic REST"]="http://$SERVER_IP:8000 (user: restic)"
-)
+[Install]
+WantedBy=default.target
+EOF
 
-echo ""
-for service in "${!FINAL_URLS[@]}"; do
-    echo -e "  ${NEON_GREEN}●${RESET} ${service}: ${NEON_CYAN}${FINAL_URLS[$service]}${RESET}"
-done
+chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/torrserver.container"
+systemctl --user daemon-reload
+systemctl --user start torrserver.service
+print_success "TorrServer запущен"
+print_url "https://torrent.lab (после настройки NPM)"
 
-if sudo podman ps | grep -q netbird; then
-    NB_IP=$(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
-    echo -e "  ${NEON_GREEN}●${RESET} NetBird VPN:     ${NEON_CYAN}$NB_IP${RESET}"
+# =============== GITEA ===============
+print_step "Создание Gitea"
+cat > "$QUADLET_USER_DIR/gitea.container" <<EOF
+[Unit]
+Description=Gitea Container
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Label=io.containers.autoupdate=registry
+Image=docker.io/gitea/gitea:latest
+Volume=$CURRENT_HOME/infra/volumes/gitea:/data:Z
+PublishPort=3000:3000
+PublishPort=2222:22
+Environment=GITEA__server__ROOT_URL=https://git.lab
+Environment=GITEA__actions__ENABLED=true
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target
+EOF
+
+chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/gitea.container"
+systemctl --user daemon-reload
+systemctl --user start gitea.service
+print_success "Gitea запущена"
+print_url "https://git.lab (после настройки NPM)"
+
+print_info "Ожидание 45 секунд для инициализации Gitea..."
+sleep 45
+
+# =============== GITEA RUNNER ===============
+print_step "Настройка Gitea Runner"
+if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1; then
+    print_success "Gitea API доступен"
+    echo ""
+    print_info "Для регистрации Runner'а нужен токен"
+    print_info "Откройте в браузере: http://$SERVER_IP:3000/-/admin/actions/runners"
+    print_info "Нажмите 'Create new runner' и скопируйте токен"
+    echo ""
+    read -rp "  Registration Token (Enter - пропустить): " RUNNER_TOKEN
+    
+    if [ -n "$RUNNER_TOKEN" ]; then
+        sudo mkdir -p /var/lib/gitea-runner
+        sudo chmod 755 /var/lib/gitea-runner
+        sudo tee "$QUADLET_SYSTEM_DIR/gitea-runner.container" > /dev/null <<EOF
+[Unit]
+Description=Gitea Runner
+After=network-online.target gitea.service
+Wants=podman-auto-update.service
+
+[Container]
+Image=docker.io/gitea/act_runner:nightly
+ContainerName=gitea-runner
+Volume=/var/run/docker.sock:/var/run/docker.sock:Z
+Volume=/var/lib/gitea-runner:/data:Z
+Environment=GITEA_INSTANCE_URL=http://$SERVER_IP:3000
+Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
+Environment=GITEA_RUNNER_NAME=runner-$(hostname | cut -d. -f1)
+AddCapability=SYS_ADMIN
+AddDevice=/dev/fuse
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        sudo chmod 644 "$QUADLET_SYSTEM_DIR/gitea-runner.container"
+        sudo systemctl daemon-reload
+        sudo systemctl start gitea-runner.service
+        print_success "Gitea Runner запущен"
+    else
+        print_warning "Runner пропущен"
+    fi
+else
+    print_warning "Gitea API не доступен. Runner можно настроить позже"
 fi
 
-echo ""
-echo -e "${NEON_BLUE}📋 ВАЖНЫЕ ФАЙЛЫ${RESET}"
-echo -e "  ${MUTED_GRAY}●${RESET} SSL сертификаты: $CERT_DIR"
-echo -e "  ${MUTED_GRAY}●${RESET} Корневой CA:     ~/.local/share/mkcert/rootCA.pem"
-echo -e "  ${MUTED_GRAY}●${RESET} Пароль restic:   /var/lib/rest-server/.restic_pass"
-echo ""
+# =============== NETBIRD ===============
+print_step "Настройка NetBird"
+read -rp "  NetBird Setup Key (Enter - пропустить): " NB_KEY
+if [ -n "$NB_KEY" ]; then
+    sudo mkdir -p /var/lib/netbird
+    sudo chmod 755 /var/lib/netbird
+    sudo tee "$QUADLET_SYSTEM_DIR/netbird.container" > /dev/null <<EOF
+[Unit]
+Description=NetBird VPN Container
+After=network-online.target
+Wants=podman-auto-update.service
 
-echo -e "${NEON_YELLOW}📝 ДЛЯ КЛИЕНТОВ${RESET}"
-echo -e "  ${NEON_YELLOW}1.${RESET} Добавьте в /etc/hosts:"
-echo -e "     ${MUTED_GRAY}$SERVER_IP passbolt.lab git.lab backup.lab home.lab torrent.lab${RESET}"
-echo -e "  ${NEON_YELLOW}2.${RESET} Установите корневой сертификат:"
-echo -e "     ${MUTED_GRAY}~/.local/share/mkcert/rootCA.pem${RESET}"
+[Container]
+Image=docker.io/netbirdio/netbird:latest
+ContainerName=netbird
+Network=host
+AddDevice=/dev/net/tun
+Volume=/var/lib/netbird:/etc/netbird:Z
+Environment=NB_SETUP_KEY=$NB_KEY
+Environment=NB_MANAGEMENT_URL=https://api.netbird.io:443
+SecurityLabelDisable=true
+AddCapability=ALL
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo chmod 644 "$QUADLET_SYSTEM_DIR/netbird.container"
+    sudo systemctl daemon-reload
+    sudo systemctl start netbird.service
+    print_success "NetBird запущен"
+fi
+
+# =============== REST-SERVER ===============
+print_step "Настройка Restic REST сервера"
+if [ ! -f "/var/lib/rest-server/.htpasswd" ]; then
+    sudo mkdir -p /var/lib/rest-server
+    REST_PASS=$(openssl rand -base64 24 | tr -d "=+/" | cut -c1-20)
+    echo "$REST_PASS" | sudo tee /var/lib/rest-server/.restic_pass > /dev/null
+    sudo htpasswd -B -b -c /var/lib/rest-server/.htpasswd restic "$REST_PASS" >/dev/null 2>&1
+    sudo chmod 600 /var/lib/rest-server/.htpasswd /var/lib/rest-server/.restic_pass
+    print_success "Создан пользователь restic"
+fi
+
+sudo tee "$QUADLET_SYSTEM_DIR/rest-server.container" > /dev/null <<EOF
+[Unit]
+Description=Restic REST Server
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Image=docker.io/restic/rest-server:latest
+ContainerName=rest-server
+Volume=/var/lib/rest-server:/data:Z
+PublishPort=8000:8000
+Exec=rest-server --path /data --htpasswd-file /data/.htpasswd --append-only --listen :8000
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/rest-server.container"
+sudo systemctl daemon-reload
+sudo systemctl start rest-server.service
+print_success "Restic REST сервер запущен"
+
+# =============== PASSBOLT ===============
+print_step "Настройка Passbolt"
+
+sudo mkdir -p /var/lib/passbolt/{database,gpg,jwt}
+sudo chmod 755 /var/lib/passbolt/{database,gpg,jwt}
+
+print_info "Генерация GPG ключей для Passbolt..."
+sudo podman run --rm -v /var/lib/passbolt/gpg:/etc/passbolt/gpg:Z docker.io/passbolt/passbolt:latest \
+  /bin/bash -c "gpg --batch --gen-key <<EOF
+    %no-protection
+    Key-Type: RSA
+    Key-Length: 4096
+    Name-Real: Passbolt
+    Name-Email: passbolt@devops.lab
+    Expire-Date: 0
+EOF" 2>/dev/null
+
+openssl rand -base64 32 | sudo tee /var/lib/passbolt/jwt/jwt.key > /dev/null
+sudo chmod 600 /var/lib/passbolt/jwt/jwt.key
+
+GPG_FINGERPRINT=$(sudo gpg --homedir /var/lib/passbolt/gpg --fingerprint 2>/dev/null | grep -oE '[0-9A-F]{40}' | head -1)
+PASSBOLT_DB_PASS=$(openssl rand -base64 24)
+
+sudo tee /var/lib/passbolt/config.php > /dev/null <<EOF
+<?php
+return [
+    'App' => ['fullBaseUrl' => 'https://passbolt.lab', 'registration' => ['public' => false]],
+    'Database' => ['host' => 'localhost', 'port' => '3306', 'username' => 'passbolt', 
+                   'password' => '$PASSBOLT_DB_PASS', 'database' => 'passbolt'],
+    'passbolt' => ['gpg' => ['serverKey' => ['fingerprint' => '$GPG_FINGERPRINT',
+                    'public' => '/etc/passbolt/gpg/public.key', 'private' => '/etc/passbolt/gpg/private.key']],
+                   'jwt' => ['key' => file_get_contents('/etc/passbolt/jwt/jwt.key')]]
+];
+EOF
+
+sudo chmod 644 /var/lib/passbolt/config.php
+
+sudo tee "$QUADLET_SYSTEM_DIR/passbolt.container" > /dev/null <<EOF
+[Unit]
+Description=Passbolt Password Manager
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Image=docker.io/passbolt/passbolt:latest
+ContainerName=passbolt
+Volume=/var/lib/passbolt/database:/var/lib/mysql:Z
+Volume=/var/lib/passbolt/gpg:/etc/passbolt/gpg:Z
+Volume=/var/lib/passbolt/jwt:/etc/passbolt/jwt:Z
+Volume=/var/lib/passbolt/config.php:/etc/passbolt/passbolt.php:Z
+PublishPort=8080:80
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/passbolt.container"
+sudo systemctl daemon-reload
+sudo systemctl start passbolt.service
+print_success "Passbolt запущен"
+print_url "https://passbolt.lab"
+
+# =============== BACKREST ===============
+print_step "Настройка Backrest"
+sudo mkdir -p /var/lib/backrest/{data,config,cache}
+sudo chown -R 1000:1000 /var/lib/backrest 2>/dev/null
+
+sudo tee "$QUADLET_SYSTEM_DIR/backrest.container" > /dev/null <<EOF
+[Unit]
+Description=Backrest WebUI for Restic
+After=network-online.target rest-server.service
+Wants=podman-auto-update.service
+
+[Container]
+Image=ghcr.io/garethgeorge/backrest:latest
+ContainerName=backrest
+Volume=/var/lib/backrest/data:/data:Z
+Volume=/var/lib/backrest/config:/config:Z
+Volume=/var/lib/backrest/cache:/cache:Z
+Volume=$VOLUMES_DIR:/userdata:ro,Z
+Environment=BACKREST_DATA=/data
+Environment=BACKREST_CONFIG=/config/config.json
+Environment=XDG_CACHE_HOME=/cache
+Environment=BACKREST_PORT=:9898
+PublishPort=9898:9898
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/backrest.container"
+sudo systemctl daemon-reload
+sudo systemctl start backrest.service
+print_success "Backrest запущен"
+print_url "https://backup.lab"
+
+# =============== SECRETCTL ===============
+print_step "Настройка secretctl (API-ключи)"
+
+export PATH=$PATH:/usr/local/go/bin
+go install github.com/forest6511/secretctl@latest 2>/dev/null
+sudo ln -sf ~/go/bin/secretctl /usr/local/bin/
+
+# Инициализация хранилища
+secretctl init <<< "$(openssl rand -base64 32)" 2>/dev/null
+
+# Web UI сервис
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/secretctl-web.service <<EOF
+[Unit]
+Description=secretctl Web Interface
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/$CURRENT_USER/go/bin/secretctl web --port 8082 --bind 127.0.0.1
+Restart=always
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now secretctl-web.service
+
+print_success "secretctl установлен"
+print_url "https://keys.lab (Web UI) + Windows GUI доступен на GitHub"
+
+# =============== NGINX PROXY MANAGER ===============
+print_step "Настройка Nginx Proxy Manager"
+
+NPM_DIR="$INFRA_DIR/nginx-proxy-manager"
+mkdir -p "$NPM_DIR"/{data,letsencrypt}
+
+sudo tee "$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container" > /dev/null <<EOF
+[Unit]
+Description=Nginx Proxy Manager
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Image=jc21/nginx-proxy-manager:latest
+ContainerName=nginx-proxy-manager
+Volume=$NPM_DIR/data:/data:Z
+Volume=$NPM_DIR/letsencrypt:/etc/letsencrypt:Z
+PublishPort=80:80
+PublishPort=443:443
+PublishPort=81:81
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container"
+sudo systemctl daemon-reload
+sudo systemctl start nginx-proxy-manager.service
+
+print_success "Nginx Proxy Manager запущен"
+print_info "Admin UI: http://$SERVER_IP:81 (admin@example.com / changeme)"
+
+# =============== HOMEPAGE ===============
+print_step "Настройка Homepage (красивый дашборд)"
+
 echo ""
+print_info "🌤 Хочешь видеть погоду на дашборде?"
+print_info "1. Зарегистрируйся на https://home.openweathermap.org/users/sign_up"
+print_info "2. Получи бесплатный API ключ"
+print_info "3. Введи его ниже (или Enter чтобы пропустить)"
+echo ""
+read -rp "  OpenWeatherMap API ключ: " WEATHER_KEY
 
-echo -e "${NEON_GREEN}🎉 УПРАВЛЕНИЕ: ${NEON_CYAN}infra status${RESET}"
-echo -e "${NEON_GREEN}📋 ЛОГИ:       ${NEON_CYAN}infra logs <service>${RESET}"
+HOMEPAGE_CONFIG_DIR="$VOLUMES_DIR/homepage/config"
+mkdir -p "$HOMEPAGE_CONFIG_DIR"
 
-# =============== 11. САМОУДАЛЕНИЕ ===============
+if [ -n "$WEATHER_KEY" ]; then
+    WEATHER_CONFIG="
+  - name: \"Погода в Барнауле\"
+    type: \"openweathermap\"
+    apiKey: \"$WEATHER_KEY\"
+    units: \"metric\"
+    city: \"Barnaul\"
+    country: \"RU\""
+    print_success "Погода будет отображаться"
+else
+    WEATHER_CONFIG=""
+    print_info "Погода отключена"
+fi
+
+cat > "$HOMEPAGE_CONFIG_DIR/settings.yaml" <<EOF
+---
+title: "DevOps Lab Dashboard"
+theme: dark
+color: slate
+headerStyle: clean
+hideVersion: false
+useEqualHeights: true
+statusStyle: "dot"
+statusPosition: "bottom"
+search:
+  provider: duckduckgo
+  target: _blank
+information:
+$WEATHER_CONFIG
+  - name: "Системная информация"
+    type: "glances"
+    url: "http://localhost:61208"
+    refresh: 5000
+EOF
+
+cat > "$HOMEPAGE_CONFIG_DIR/services.yaml" <<EOF
+---
+Infrastructure:
+  - Passbolt:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/passbolt.png
+      href: https://passbolt.lab
+      description: "Менеджер паролей"
+      container: passbolt
+  - Backrest:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
+      href: https://backup.lab
+      description: "Управление бэкапами"
+      container: backrest
+  - Gitea:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gitea.png
+      href: https://git.lab
+      description: "Git репозиторий"
+      container: systemd-gitea
+  - TorrServer:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/torrent.png
+      href: https://torrent.lab
+      description: "Торрент стриминг"
+      container: systemd-torrserver
+
+Windows Clients:
+  - NetBird VPN:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
+      href: https://pkgs.netbird.io/windows
+      description: "Для доступа к сервисам из любой точки"
+      subtitle: "Обязательно! Без VPN не попадёшь домой"
+  - secretctl Desktop:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/key.png
+      href: https://github.com/forest6511/secretctl/releases
+      description: "GUI для API-ключей"
+      subtitle: "Хранилище на сервере ~/.secretctl/vault.db"
+  - Bitwarden Desktop:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/bitwarden.png
+      href: https://bitwarden.com/download/
+      description: "Клиент для Passbolt"
+      subtitle: "Настрой сервер https://passbolt.lab"
+  - Restic:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
+      href: https://github.com/restic/restic/releases
+      description: "Бэкапы Windows"
+      subtitle: "rest:http://restic:ПАРОЛЬ@keys.lab:8000/windows-backup"
+
+Administration:
+  - Nginx Proxy Manager:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/nginx-proxy-manager.png
+      href: http://192.168.1.8:81
+      description: "Reverse proxy GUI"
+      container: nginx-proxy-manager
+  - NetBird:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
+      href: https://app.netbird.io
+      description: "VPN управление"
+      container: netbird
+  - secretctl:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/key.png
+      href: https://keys.lab
+      description: "API-ключи (Web UI)"
+  - Restic REST:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
+      href: http://192.168.1.8:8000
+      description: "Хранилище бэкапов"
+      container: rest-server
+EOF
+
+chown -R "$CURRENT_USER:$CURRENT_USER" "$HOMEPAGE_CONFIG_DIR"
+
+cat > "$QUADLET_USER_DIR/homepage.container" <<EOF
+[Unit]
+Description=Homepage Dashboard
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Label=io.containers.autoupdate=registry
+Image=ghcr.io/gethomepage/homepage:latest
+ContainerName=homepage
+Volume=$HOMEPAGE_CONFIG_DIR:/app/config:Z
+Volume=/var/run/docker.sock:/var/run/docker.sock:ro,Z
+PublishPort=3001:3000
+Environment=PUID=$CURRENT_UID
+Environment=PGID=$CURRENT_UID
+Environment=HOMEPAGE_ALLOWED_HOSTS=$SERVER_IP:3001,localhost:3001,127.0.0.1:3001,home.lab:3001,$(hostname):3001
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target
+EOF
+
+chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/homepage.container"
+systemctl --user daemon-reload
+systemctl --user start homepage.service
+
+print_success "Homepage запущен"
+print_url "https://home.lab"
+
+# =============== ФИНАЛЬНЫЙ ВЫВОД ===============
+print_header "🚀 ИНФРАСТРУКТУРА ПОЛНОСТЬЮ ГОТОВА v11.0.5"
+
+cat <<EOF
+
+${NEON_GREEN}╔══════════════════════════════════════════════════════════╗${RESET}
+${NEON_GREEN}║           🔗 ССЫЛКИ ДОСТУПА (ДОБАВЬ В /ETC/HOSTS)      ║${RESET}
+${NEON_GREEN}╚══════════════════════════════════════════════════════════╝${RESET}
+${MUTED_GRAY}  $SERVER_IP passbolt.lab git.lab backup.lab home.lab torrent.lab keys.lab${RESET}
+
+${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
+  ${NEON_GREEN}●${RESET} Homepage:            ${NEON_CYAN}https://home.lab${RESET}
+  ${NEON_GREEN}●${RESET} Nginx Proxy Manager: ${NEON_CYAN}http://$SERVER_IP:81${RESET} (admin@example.com/changeme)
+
+${NEON_CYAN}🔐 МЕНЕДЖЕРЫ СЕКРЕТОВ${RESET}
+  ${NEON_GREEN}●${RESET} Passbolt:            ${NEON_CYAN}https://passbolt.lab${RESET} (пароли людей)
+  ${NEON_GREEN}●${RESET} secretctl:           ${NEON_CYAN}https://keys.lab${RESET} (API-ключи для машин)
+  ${NEON_GREEN}●${RESET} secretctl Desktop:   ${NEON_CYAN}https://github.com/forest6511/secretctl/releases${RESET}
+
+${NEON_CYAN}📦 РАЗРАБОТКА И БЭКАПЫ${RESET}
+  ${NEON_GREEN}●${RESET} Gitea:               ${NEON_CYAN}https://git.lab${RESET}
+  ${NEON_GREEN}●${RESET} Backrest:            ${NEON_CYAN}https://backup.lab${RESET}
+  ${NEON_GREEN}●${RESET} Restic REST:         ${NEON_CYAN}http://$SERVER_IP:8000${RESET} (user: restic)
+
+${NEON_CYAN}🎬 МЕДИА${RESET}
+  ${NEON_GREEN}●${RESET} TorrServer:          ${NEON_CYAN}https://torrent.lab${RESET}
+
+${NEON_CYAN}🪟 WINDOWS КЛИЕНТЫ${RESET}
+  ${NEON_GREEN}●${RESET} NetBird:     ${NEON_CYAN}https://pkgs.netbird.io/windows${RESET} (VPN)
+  ${NEON_GREEN}●${RESET} secretctl:   ${NEON_CYAN}https://github.com/forest6511/secretctl/releases${RESET} (API-ключи)
+  ${NEON_GREEN}●${RESET} Bitwarden:   ${NEON_CYAN}https://bitwarden.com/download/${RESET} (Passbolt клиент)
+  ${NEON_GREEN}●${RESET} Restic:      ${NEON_CYAN}https://github.com/restic/restic/releases${RESET} (бэкапы)
+
+${NEON_BLUE}📋 ВАЖНЫЕ ФАЙЛЫ${RESET}
+  ${NEON_GREEN}●${RESET} SSL сертификаты:     $CERT_DIR
+  ${NEON_GREEN}●${RESET} Корневой CA:         ~/.local/share/mkcert/rootCA.pem
+  ${NEON_GREEN}●${RESET} Пароль restic:       /var/lib/rest-server/.restic_pass
+  ${NEON_GREEN}●${RESET} secretctl хранилище: ~/.secretctl/vault.db
+
+${NEON_GREEN}🎉 УПРАВЛЕНИЕ: ${NEON_CYAN}infra status${RESET}
+${NEON_GREEN}📋 ЛОГИ:       ${NEON_CYAN}infra logs <service>${RESET}
+EOF
+
+# =============== САМОУДАЛЕНИЕ ===============
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 if [ -f "$SCRIPT_PATH" ] && [ "$SCRIPT_PATH" != "$BIN_DIR/infra" ] && [ "$SCRIPT_PATH" != "/usr/local/bin/infra" ]; then
     rm -f "$SCRIPT_PATH"
