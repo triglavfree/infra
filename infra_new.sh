@@ -12,9 +12,9 @@ set -uo pipefail
 # ✅ Restic REST — хранилище бэкапов
 # ✅ Gitea + Runner — Git с CI/CD
 # ✅ TorrServer — торрент-стриминг
-# ✅ Homepage — красивый дашборд
+# ✅ Homepage — красивый дашборд с виджетами
 # ✅ Traefik — reverse proxy с дашбордом и авто-HTTPS
-# ✅ NetBird VPN — доступ из любой точки
+# ✅ NetBird VPN — доступ из любой точки (rootless-latest)
 # ✅ mkcert — локальный HTTPS для .lab доменов
 # =============================================================================
 
@@ -325,7 +325,6 @@ get_status() {
     local name=$1 type=$2 user=$3
     case $type in
         service)
-            # Для Quadlet имена сервисов соответствуют именам container файлов
             local service_name="$name.service"
             if [ "$user" = "root" ]; then
                 systemctl is-active --quiet "$service_name" 2>/dev/null && echo "active" || echo "inactive"
@@ -337,7 +336,6 @@ get_status() {
             local runtime="podman"
             [ "$user" = "root" ] && runtime="sudo podman"
             
-            # Quadlet создаёт контейнеры с именем как в .container файле
             if $runtime ps --format "{{.Names}}" 2>/dev/null | grep -q "^$name$"; then
                 echo "running"
             elif $runtime ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^$name$"; then
@@ -379,11 +377,11 @@ status_cmd() {
 
     declare -A sections=(
         ["Rootless Services (Quadlet)"]="gitea torrserver homepage"
-        ["Rootful Services (Quadlet)"]="gitea-runner netbird traefik faucet keeweb"
-        ["Backup & Storage"]="rest-server backrest"
+        ["Rootful Services (Quadlet)"]="gitea-runner netbird traefik faucet keeweb backrest"
+        ["Backup Storage"]="rest-server"
     )
 
-    for section in "Rootless Services (Quadlet)" "Rootful Services (Quadlet)" "Backup & Storage"; do
+    for section in "Rootless Services (Quadlet)" "Rootful Services (Quadlet)" "Backup Storage"; do
         echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}$section${RESET}"
         echo -e "${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
         
@@ -459,22 +457,7 @@ status_cmd() {
 
     echo -e "\n${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
     echo -e "  ${ICON_OK} running  ${ICON_FAIL} stopped  ${NEON_CYAN}↗${RESET} URL ${NEON_GREEN}✓${RESET} доступен ${NEON_RED}✗${RESET} недоступен"
-    echo -e "  ${MUTED_GRAY}Commands: ${NEON_CYAN}status${RESET}|${NEON_CYAN}start${RESET}|${NEON_CYAN}stop${RESET}|${NEON_CYAN}restart${RESET}|${NEON_CYAN}logs${RESET}|${NEON_CYAN}backup${RESET}|${NEON_CYAN}clear${RESET}"
-}
-
-backup_cmd() {
-    BACKUP_DIR="$INFRA_DIR/backups/snapshots"
-    mkdir -p "$BACKUP_DIR"
-    backup_time=$(date +%Y%m%d-%H%M%S)
-    SNAPSHOT="$BACKUP_DIR/infra-$backup_time.tar.gz"
-    echo -e "${NEON_CYAN}▸ Создание бэкапа...${RESET}"
-    if podman run --rm -v "$INFRA_DIR/volumes:/data:ro" -v "$BACKUP_DIR:/backup:Z" docker.io/library/alpine:latest tar -czf "/backup/$(basename $SNAPSHOT)" -C /data . 2>/dev/null; then
-        sudo chown $USER:$USER "$SNAPSHOT" 2>/dev/null
-        size=$(du -h "$SNAPSHOT" 2>/dev/null | cut -f1)
-        echo -e "  ${ICON_OK} Бэкап создан: $(basename $SNAPSHOT) ($size)"
-    else
-        echo -e "  ${ICON_WARN} Ошибка создания бэкапа"
-    fi
+    echo -e "  ${MUTED_GRAY}Commands: ${NEON_CYAN}status${RESET}|${NEON_CYAN}start${RESET}|${NEON_CYAN}stop${RESET}|${NEON_CYAN}restart${RESET}|${NEON_CYAN}logs${RESET}|${NEON_CYAN}clear${RESET}"
 }
 
 clear_cmd() {
@@ -493,6 +476,18 @@ clear_cmd() {
     echo -e "  ${NEON_YELLOW}▸ Удаление Quadlet файлов...${RESET}"
     rm -f "$HOME/.config/containers/systemd"/{gitea,torrserver,homepage}.container
     sudo rm -f /etc/containers/systemd/{gitea-runner,netbird,rest-server,keeweb,traefik,backrest,faucet}.container
+
+    # Удаляем сгенерированные systemd юниты Quadlet (временные)
+    sudo rm -f /run/systemd/generator/*.service
+    sudo rm -f /run/systemd/generator/*.target
+    sudo rm -f /run/systemd/generator/*.timer
+
+    # Для текущего пользователя
+    if [ -n "$UID" ]; then
+        rm -f /run/user/$UID/systemd/generator/*.service
+        rm -f /run/user/$UID/systemd/generator/*.target
+        rm -f /run/user/$UID/systemd/generator/*.timer
+    fi
 
     sudo systemctl daemon-reload
     systemctl --user daemon-reload
@@ -542,9 +537,8 @@ case "${1:-status}" in
         esac
         echo -e "  ${ICON_OK} $2 restarted"
         ;;
-    backup) backup_cmd ;;
     clear) clear_cmd ;;
-    *) echo "Использование: infra {status|start|stop|restart|logs|backup|clear}" ;;
+    *) echo "Использование: infra {status|start|stop|restart|logs|clear}" ;;
 esac
 ENDOFCLI
 
@@ -566,6 +560,15 @@ Label=io.containers.autoupdate=registry
 Image=ghcr.io/yourok/torrserver:latest
 Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z:Z
 PublishPort=8090:8090
+# Traefik labels
+Label=traefik.enable=true
+Label=traefik.http.routers.torrserver-http.rule=Host(\`torrent.lab\`)
+Label=traefik.http.routers.torrserver-http.entrypoints=web
+Label=traefik.http.routers.torrserver-http.middlewares=https-redirect@file
+Label=traefik.http.routers.torrserver-https.rule=Host(\`torrent.lab\`)
+Label=traefik.http.routers.torrserver-https.entrypoints=websecure
+Label=traefik.http.routers.torrserver-https.tls=true
+Label=traefik.http.services.torrserver.loadbalancer.server.port=8090
 
 [Service]
 Restart=always
@@ -581,7 +584,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now torrserver.service
 sleep 3
 print_success "TorrServer запущен через Quadlet"
-print_url "http://$SERVER_IP:8090"
+print_url "https://torrent.lab (после настройки Traefik и hosts)"
 
 # =============== 9. GITEA (rootless QUADLET) ===============
 print_step "Создание Gitea (Quadlet с лейблами Traefik)"
@@ -703,7 +706,7 @@ After=network-online.target
 Wants=podman-auto-update.service
 
 [Container]
-Image=docker.io/netbirdio/netbird:0.66.0
+Image=docker.io/netbirdio/netbird:rootless-latest
 ContainerName=netbird
 Network=host
 AddDevice=/dev/net/tun
@@ -725,7 +728,7 @@ EOF
     sudo chmod 644 "$QUADLET_SYSTEM_DIR/netbird.container"
     sudo systemctl daemon-reload
     sudo systemctl enable --now netbird.service
-    print_success "NetBird запущен через Quadlet"
+    print_success "NetBird запущен через Quadlet (rootless-latest)"
 else
     print_info "NetBird пропущен"
 fi
@@ -769,7 +772,7 @@ sudo systemctl enable --now rest-server.service
 print_success "Restic REST сервер запущен через Quadlet"
 print_url "http://$SERVER_IP:8000"
 
-# =============== 13. BACKREST (rootful QUADLET) ===============
+# =============== 13. BACKREST (rootful QUADLET с лейблами Traefik) ===============
 print_step "Настройка Backrest"
 
 sudo chown -R 1000:1000 /var/lib/backrest 2>/dev/null || true
@@ -801,6 +804,15 @@ Environment=BACKREST_CONFIG=/config/config.json
 Environment=XDG_CACHE_HOME=/cache
 Environment=BACKREST_PORT=:9898
 PublishPort=9898:9898
+# Traefik labels
+Label=traefik.enable=true
+Label=traefik.http.routers.backrest-http.rule=Host(\`backup.lab\`)
+Label=traefik.http.routers.backrest-http.entrypoints=web
+Label=traefik.http.routers.backrest-http.middlewares=https-redirect@file
+Label=traefik.http.routers.backrest-https.rule=Host(\`backup.lab\`)
+Label=traefik.http.routers.backrest-https.entrypoints=websecure
+Label=traefik.http.routers.backrest-https.tls=true
+Label=traefik.http.services.backrest.loadbalancer.server.port=9898
 
 [Service]
 Restart=always
@@ -815,7 +827,7 @@ sudo chmod 644 "$QUADLET_SYSTEM_DIR/backrest.container"
 sudo systemctl daemon-reload
 sudo systemctl enable --now backrest.service
 print_success "Backrest запущен через Quadlet"
-print_url "http://$SERVER_IP:9898"
+print_url "https://backup.lab (после настройки Traefik и hosts)"
 
 # =============== 14. FAUCET (rootful QUADLET) ===============
 print_step "Настройка Faucet (MCP Server + GUI)"
@@ -1073,7 +1085,7 @@ mkdir -p "$HOMEPAGE_CONFIG_DIR"
 chmod 755 "$HOMEPAGE_CONFIG_DIR"
 chmod 644 "$HOMEPAGE_CONFIG_DIR"/*.yaml 2>/dev/null || true
 
-# Создаём конфиг services.yaml
+# Создаём конфиг services.yaml с виджетом Faucet
 cat > "$HOMEPAGE_CONFIG_DIR/services.yaml" <<EOF
 ---
 Инфраструктура:
@@ -1081,36 +1093,56 @@ cat > "$HOMEPAGE_CONFIG_DIR/services.yaml" <<EOF
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/keepass.png
       href: https://keeweb.lab
       description: "Менеджер паролей"
+      container: keeweb
   - Faucet:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/faucet.png
       href: https://keys.lab
       description: "API-ключи для AI (MCP)"
+      container: faucet
+      widget:
+        type: customapi
+        url: http://192.168.1.8:8082/api/v1/system/health
+        headers:
+          X-API-Key: "ВАШ_API_КЛЮЧ_FAUCET"   # Замените на реальный ключ, созданный в админке Faucet
+        refresh: 5000
+        fields:
+          - name: status
+            label: Статус
+            format: uppercase
+          - name: version
+            label: Версия
   - Gitea:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gitea.png
       href: https://git.lab
       description: "Git репозиторий"
+      container: gitea
   - Backrest:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
       href: https://backup.lab
       description: "Управление бэкапами"
+      container: backrest
   - TorrServer:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/torrent.png
       href: https://torrent.lab
       description: "Торрент стриминг"
+      container: torrserver
 
 Администрирование:
   - Traefik:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/traefik.png
       href: https://traefik.lab
       description: "Reverse proxy + дашборд"
+      container: traefik
   - NetBird:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
       href: https://app.netbird.io
       description: "VPN управление"
+      container: netbird
   - Restic REST:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
       href: http://$SERVER_IP:8000
       description: "Хранилище бэкапов"
+      container: rest-server
 
 Доступ напрямую:
   - Faucet (прямой):
@@ -1194,7 +1226,6 @@ chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/homepage.container"
 systemctl --user daemon-reload
 systemctl --user enable --now homepage.service
 
-# Проверяем что конфиги применились
 sleep 5
 if journalctl --user -u homepage.service -n 20 --no-pager 2>&1 | grep -q "config"; then
     print_success "Homepage запущен через Quadlet с конфигурацией"
@@ -1231,6 +1262,7 @@ ${NEON_CYAN}🔐 МЕНЕДЖЕРЫ ПАРОЛЕЙ${RESET}
   ${NEON_GREEN}●${RESET} Faucet (MCP):        ${NEON_CYAN}http://$SERVER_IP:8082/mcp${RESET}
   ${NEON_GREEN}●${RESET} Faucet (домен):      ${NEON_CYAN}https://keys.lab${RESET}
   ${MUTED_GRAY}  └─ Логин: admin / Пароль: ${NEON_CYAN}$FAUCET_PASS${RESET}
+  ${MUTED_GRAY}  └─ Для виджета Homepage создайте API-ключ в админке Faucet и подставьте в services.yaml
 
 ${NEON_CYAN}📦 РАЗРАБОТКА И БЭКАПЫ${RESET}
   ${NEON_GREEN}●${RESET} Gitea:               ${NEON_CYAN}http://$SERVER_IP:3000${RESET}
@@ -1259,8 +1291,7 @@ ${NEON_GREEN}🎉 УПРАВЛЕНИЕ ЧЕРЕЗ QUADLET:${RESET}
   ${NEON_CYAN}systemctl --user start gitea${RESET}   - ручной запуск rootless сервиса
   ${NEON_CYAN}sudo systemctl start traefik${RESET}   - ручной запуск rootful сервиса
   ${NEON_CYAN}infra logs <service>${RESET}           - логи сервиса
-  ${NEON_CYAN}infra backup${RESET}                   - бэкап всех данных
-  ${NEON_CYAN}infra clear${RESET}                     - полное удаление
+  ${NEON_CYAN}infra clear${RESET}                    - полное удаление
 
 ${NEON_GREEN}🔑 ВСЕ ПАРОЛИ СОХРАНЕНЫ В:${RESET} ${NEON_CYAN}~/infra/credentials.txt${RESET}
 EOF
@@ -1287,6 +1318,7 @@ Username: admin
 Password: $FAUCET_PASS
 MCP endpoint: http://$SERVER_IP:8082/mcp
 Domain: https://keys.lab
+Для виджета Homepage создайте API-ключ в админке Faucet (Settings → API Keys) и вставьте его в ~/infra/volumes/homepage/config/services.yaml
 
 === GITEA ===
 URL: http://$SERVER_IP:3000
@@ -1312,6 +1344,7 @@ Domain: https://home.lab
 === NETBIRD ===
 VPN IP: $(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 || echo "не определен")
 Dashboard: https://app.netbird.io
+Образ: docker.io/netbirdio/netbird:rootless-latest
 
 === QUADLET ФАЙЛЫ ===
 Rootless: ~/.config/containers/systemd/
