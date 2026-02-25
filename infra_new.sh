@@ -155,26 +155,26 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
             usermod --add-subuids 100000-165535 --add-subgids 100000-165535 '$CURRENT_USER' 2>/dev/null || true
         fi
 
-        # UFW (ВСЕ ПОРТЫ ЯВНО, БЕЗ ЦИКЛА!)
+        # UFW (ТИХИЙ РЕЖИМ)
         sed -i 's/DEFAULT_FORWARD_POLICY=\"DROP\"/DEFAULT_FORWARD_POLICY=\"ACCEPT\"/' /etc/default/ufw
         ufw --force reset >/dev/null 2>&1
         ufw default deny incoming >/dev/null 2>&1
         ufw default allow outgoing >/dev/null 2>&1
         ufw default allow routed >/dev/null 2>&1
         
-        ufw allow 22/tcp comment 'SSH'
-        ufw allow 3000/tcp comment 'Gitea HTTP'
-        ufw allow 3001/tcp comment 'Homepage'
-        ufw allow 2222/tcp comment 'Gitea SSH'
-        ufw allow 8090/tcp comment 'TorrServer'
-        ufw allow 8080/tcp comment 'Passbolt'
-        ufw allow 9898/tcp comment 'Backrest'
-        ufw allow 8000/tcp comment 'Restic REST'
-        ufw allow 81/tcp comment 'Nginx Proxy Manager Admin'
-        ufw allow 80/tcp comment 'HTTP'
-        ufw allow 443/tcp comment 'HTTPS'
-        ufw allow 51820/udp comment 'WireGuard/NetBird'
-        ufw allow 8082/tcp comment 'secretctl Web UI'
+        ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1
+        ufw allow 3000/tcp comment 'Gitea HTTP' >/dev/null 2>&1
+        ufw allow 3001/tcp comment 'Homepage' >/dev/null 2>&1
+        ufw allow 2222/tcp comment 'Gitea SSH' >/dev/null 2>&1
+        ufw allow 8090/tcp comment 'TorrServer' >/dev/null 2>&1
+        ufw allow 8080/tcp comment 'Passbolt' >/dev/null 2>&1
+        ufw allow 9898/tcp comment 'Backrest' >/dev/null 2>&1
+        ufw allow 8000/tcp comment 'Restic REST' >/dev/null 2>&1
+        ufw allow 81/tcp comment 'Nginx Proxy Manager Admin' >/dev/null 2>&1
+        ufw allow 80/tcp comment 'HTTP' >/dev/null 2>&1
+        ufw allow 443/tcp comment 'HTTPS' >/dev/null 2>&1
+        ufw allow 51820/udp comment 'WireGuard/NetBird' >/dev/null 2>&1
+        ufw allow 8082/tcp comment 'secretctl Web UI' >/dev/null 2>&1
         
         ufw --force enable >/dev/null 2>&1
 
