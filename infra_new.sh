@@ -1,21 +1,21 @@
 #!/bin/bash
 set -uo pipefail
 # =============================================================================
-# INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ АБСОЛЮТНАЯ)
+# INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ QUADLET EDITION)
 # =============================================================================
 # Полноценная домашняя инфраструктура на Ubuntu Server 24.04
-# Использует Quadlet для управления контейнерами через systemd
+# ВСЕ СЕРВИСЫ УПРАВЛЯЮТСЯ ЧЕРЕЗ QUADLET
 #
-# ✅ Passbolt + MariaDB — менеджер паролей для людей
+# ✅ KeeWeb — менеджер паролей (совместим с KeePass)
 # ✅ Faucet — MCP-сервер + GUI для API-ключей (AI-агенты)
 # ✅ Backrest — управление бэкапами
 # ✅ Restic REST — хранилище бэкапов
 # ✅ Gitea + Runner — Git с CI/CD
 # ✅ TorrServer — торрент-стриминг
-# ✅ Homepage — красивый дашборд с погодой
-# ✅ Nginx Proxy Manager — reverse proxy с GUI
+# ✅ Homepage — красивый дашборд
+# ✅ Traefik — reverse proxy с дашбордом и авто-HTTPS
 # ✅ NetBird VPN — доступ из любой точки
-# ✅ mkcert — локальный HTTPS
+# ✅ mkcert — локальный HTTPS для .lab доменов
 # =============================================================================
 
 # =============== 1. ЦВЕТА ===============
@@ -90,7 +90,7 @@ if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
     exit 1
 fi
 
-print_header "🚀 INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ АБСОЛЮТНАЯ С QUADLET)"
+print_header "🚀 INFRASTRUCTURE v12.0.0 (QUADLET EDITION)"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
 # =============== 4. ДИРЕКТОРИИ ===============
@@ -103,8 +103,8 @@ LOGS_DIR="$INFRA_DIR/logs"
 BACKUP_DIR="$INFRA_DIR/backups"
 CERT_DIR="$INFRA_DIR/certs"
 FAUCET_DIR="$INFRA_DIR/faucet"
-NPM_DIR="$INFRA_DIR/nginx-proxy-manager"
-PASSBOLT_DIR="$INFRA_DIR/passbolt"
+TRAEFIK_DIR="$INFRA_DIR/traefik"
+KEEWEB_DIR="$INFRA_DIR/keeweb"
 QUADLET_USER_DIR="$CURRENT_HOME/.config/containers/systemd"
 QUADLET_SYSTEM_DIR="/etc/containers/systemd"
 
@@ -113,8 +113,8 @@ USER_DIRS=(
     "$BACKUP_DIR/cache" "$BACKUP_DIR/snapshots" "$CERT_DIR"
     "$VOLUMES_DIR/gitea" "$VOLUMES_DIR/torrserver" "$VOLUMES_DIR/homepage/config"
     "$FAUCET_DIR"/{data,config}
-    "$NPM_DIR"/{data,letsencrypt}
-    "$PASSBOLT_DIR"/{gpg,jwt,mariadb,database}
+    "$TRAEFIK_DIR"/{config,data}
+    "$KEEWEB_DIR"/data
     "$QUADLET_USER_DIR"
 )
 
@@ -189,18 +189,15 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
         ufw default allow outgoing >/dev/null 2>&1
         ufw default allow routed >/dev/null 2>&1
         
-        # Открываем порты
         ufw allow 22/tcp >/dev/null 2>&1      # SSH
-        ufw allow 80/tcp >/dev/null 2>&1      # HTTP
-        ufw allow 443/tcp >/dev/null 2>&1     # HTTPS
-        ufw allow 81/tcp >/dev/null 2>&1      # NPM Admin
+        ufw allow 80/tcp >/dev/null 2>&1      # HTTP (Traefik)
+        ufw allow 443/tcp >/dev/null 2>&1     # HTTPS (Traefik)
+        ufw allow 8080/tcp >/dev/null 2>&1    # Traefik Dashboard
         ufw allow 3000/tcp >/dev/null 2>&1    # Gitea
         ufw allow 2222/tcp >/dev/null 2>&1    # Gitea SSH
         ufw allow 3001/tcp >/dev/null 2>&1    # Homepage
         ufw allow 8090/tcp >/dev/null 2>&1    # TorrServer
-        ufw allow 8080/tcp >/dev/null 2>&1    # Passbolt
-        ufw allow 8082/tcp >/dev/null 2>&1    # Faucet GUI
-        ufw allow 8083/tcp >/dev/null 2>&1    # Faucet MCP
+        ufw allow 8082/tcp >/dev/null 2>&1    # Faucet
         ufw allow 9898/tcp >/dev/null 2>&1    # Backrest
         ufw allow 8000/tcp >/dev/null 2>&1    # Restic REST
         ufw allow 51820/udp >/dev/null 2>&1   # NetBird
@@ -228,18 +225,16 @@ EOFAIL
     # Настройка registries.conf для Podman
     sudo tee /etc/containers/registries.conf > /dev/null <<EOF
 unqualified-search-registries = ["docker.io", "quay.io", "registry.fedoraproject.org"]
-
 [[registry]]
 prefix = "docker.io"
 location = "docker.io"
-
 [[registry.mirror]]
 location = "mirror.gcr.io"
 [[registry.mirror]]
 location = "docker-mirror.rancher.io"
 EOF
 
-    # Проверка Quadlet
+    # Настройка Quadlet
     if [ -f "/usr/libexec/podman/quadlet" ]; then
         if [ ! -L "/usr/lib/systemd/system-generators/podman-system-generator" ]; then
             sudo ln -sf /usr/libexec/podman/quadlet /usr/lib/systemd/system-generators/podman-system-generator
@@ -278,7 +273,7 @@ step "Генерация сертификатов" "
     mkcert -key-file \"$CERT_DIR/lab-key.pem\" \
            -cert-file \"$CERT_DIR/lab-cert.pem\" \
            localhost 127.0.0.1 $SERVER_IP \
-           passbolt.lab git.lab backup.lab home.lab torrent.lab keys.lab \
+           keeweb.lab keys.lab git.lab backup.lab home.lab torrent.lab traefik.lab \
            $(hostname) $(hostname).local
 " true
 
@@ -302,26 +297,52 @@ ICON_OK="${NEON_GREEN}●${RESET}"; ICON_FAIL="${NEON_RED}●${RESET}"
 ICON_WARN="${NEON_YELLOW}●${RESET}"; ICON_INFO="${NEON_BLUE}●${RESET}"
 ICON_ARROW="▸"
 
+get_container_url() {
+    local name=$1
+    local user=$2
+    local runtime="podman"
+    [ "$user" = "root" ] && runtime="sudo podman"
+    
+    local ports=$($runtime port $name 2>/dev/null | grep -v "->" | head -1)
+    if [ -n "$ports" ]; then
+        local host_port=$(echo "$ports" | awk -F'->' '{print $1}' | sed 's/0.0.0.0/'"$SERVER_IP"'/')
+        echo "$host_port"
+    else
+        echo ""
+    fi
+}
+
+check_url() {
+    local url=$1
+    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$url" 2>/dev/null | grep -q "200\|302\|401\|403"; then
+        echo -e "${NEON_GREEN}✓${RESET}"
+    else
+        echo -e "${NEON_RED}✗${RESET}"
+    fi
+}
+
 get_status() {
     local name=$1 type=$2 user=$3
     case $type in
         service)
+            # Для Quadlet имена сервисов соответствуют именам container файлов
+            local service_name="$name.service"
             if [ "$user" = "root" ]; then
-                systemctl is-active --quiet "$name" 2>/dev/null && echo "active" || echo "inactive"
+                systemctl is-active --quiet "$service_name" 2>/dev/null && echo "active" || echo "inactive"
             else
-                systemctl --user is-active --quiet "$name" 2>/dev/null && echo "active" || echo "inactive"
+                systemctl --user is-active --quiet "$service_name" 2>/dev/null && echo "active" || echo "inactive"
             fi
             ;;
         container)
             local runtime="podman"
             [ "$user" = "root" ] && runtime="sudo podman"
-            local container_name="$name"
-            [ "$user" != "root" ] && container_name="systemd-$name"
             
-            if $runtime ps --format "{{.Names}}" 2>/dev/null | grep -q "^$container_name$"; then
+            # Quadlet создаёт контейнеры с именем как в .container файле
+            if $runtime ps --format "{{.Names}}" 2>/dev/null | grep -q "^$name$"; then
                 echo "running"
-            elif $runtime ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^$container_name$"; then
-                echo "stopped"
+            elif $runtime ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^$name$"; then
+                local status=$($runtime inspect --format='{{.State.Status}}' "$name" 2>/dev/null)
+                [ "$status" = "exited" ] && echo "stopped" || echo "$status"
             else
                 echo "not_created"
             fi
@@ -337,52 +358,84 @@ format_status() {
     esac
 }
 
-check_url() {
-    local url=$1
-    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$url" 2>/dev/null | grep -q "200\|302\|401\|403"; then
-        echo -e "${NEON_GREEN}✓${RESET}"
-    else
-        echo -e "${NEON_RED}✗${RESET}"
-    fi
-}
-
 status_cmd() {
     clear
     echo -e "${NEON_CYAN}╔══════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${NEON_CYAN}║${RESET} ${BOLD}${SOFT_WHITE}INFRA STATUS v12.0.0${RESET}                           ${NEON_CYAN}║${RESET}"
+    echo -e "${NEON_CYAN}║${RESET} ${BOLD}${SOFT_WHITE}INFRA STATUS v12.0.0 (QUADLET)${RESET}                     ${NEON_CYAN}║${RESET}"
     echo -e "${NEON_CYAN}╚══════════════════════════════════════════════════════════╝${RESET}"
 
     declare -A services=(
-        [gitea]="user:https://git.lab"
-        [torrserver]="user:https://torrent.lab"
-        [homepage]="user:https://home.lab"
-        [gitea-runner]="root:"
-        [netbird]="root:"
-        [nginx-proxy-manager]="root:http://$SERVER_IP:81"
-        [faucet]="root:https://keys.lab"
-        [rest-server]="root:http://$SERVER_IP:8000"
-        [passbolt]="root:https://passbolt.lab"
-        [passbolt-db]="root:"
-        [backrest]="root:https://backup.lab"
+        [gitea]="user"
+        [torrserver]="user"
+        [homepage]="user"
+        [gitea-runner]="root"
+        [netbird]="root"
+        [traefik]="root"
+        [faucet]="root"
+        [rest-server]="root"
+        [keeweb]="root"
+        [backrest]="root"
     )
 
     declare -A sections=(
-        ["Rootless Services"]="gitea torrserver homepage"
-        ["Rootful Services"]="gitea-runner netbird nginx-proxy-manager faucet passbolt-db"
-        ["Backup & Security"]="rest-server passbolt backrest"
+        ["Rootless Services (Quadlet)"]="gitea torrserver homepage"
+        ["Rootful Services (Quadlet)"]="gitea-runner netbird traefik faucet keeweb"
+        ["Backup & Storage"]="rest-server backrest"
     )
 
-    for section in "Rootless Services" "Rootful Services" "Backup & Security"; do
+    for section in "Rootless Services (Quadlet)" "Rootful Services (Quadlet)" "Backup & Storage"; do
         echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}$section${RESET}"
         echo -e "${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
         
         for svc in ${sections[$section]}; do
-            IFS=':' read -r user url <<< "${services[$svc]}"
+            user="${services[$svc]}"
             svc_status=$(format_status "$(get_status $svc service $user)")
             ctr_status=$(format_status "$(get_status $svc container $user)")
+            
             printf "  ${DIM_GRAY}%-18s${RESET} %s %s\n" "$svc" "$svc_status" "$ctr_status"
-            if [ -n "$url" ]; then
-                printf "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}%s${RESET} %s\n" "$url" "$(check_url "$url")"
+            
+            if [ "$ctr_status" != "${DIM_GRAY}● not created${RESET}" ]; then
+                case "$svc" in
+                    traefik)
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}Dashboard:${RESET} http://$SERVER_IP:8080 $(check_url "http://$SERVER_IP:8080")"
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}Domain:${RESET} https://traefik.lab"
+                        ;;
+                    faucet)
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}UI:${RESET} http://$SERVER_IP:8082 $(check_url "http://$SERVER_IP:8082")"
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}MCP:${RESET} http://$SERVER_IP:8082/mcp $(check_url "http://$SERVER_IP:8082/mcp")"
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}Domain:${RESET} https://keys.lab"
+                        ;;
+                    keeweb)
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}URL:${RESET} http://$SERVER_IP:8080 $(check_url "http://$SERVER_IP:8080")"
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}Domain:${RESET} https://keeweb.lab"
+                        ;;
+                    homepage)
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}URL:${RESET} http://$SERVER_IP:3001 $(check_url "http://$SERVER_IP:3001")"
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}Domain:${RESET} https://home.lab"
+                        ;;
+                    gitea)
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}URL:${RESET} http://$SERVER_IP:3000 $(check_url "http://$SERVER_IP:3000")"
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}Domain:${RESET} https://git.lab"
+                        ;;
+                    torrserver)
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}URL:${RESET} http://$SERVER_IP:8090 $(check_url "http://$SERVER_IP:8090")"
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}Domain:${RESET} https://torrent.lab"
+                        ;;
+                    backrest)
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}URL:${RESET} http://$SERVER_IP:9898 $(check_url "http://$SERVER_IP:9898")"
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}Domain:${RESET} https://backup.lab"
+                        ;;
+                    rest-server)
+                        echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}URL:${RESET} http://$SERVER_IP:8000 $(check_url "http://$SERVER_IP:8000")"
+                        ;;
+                    *)
+                        container_url=$(get_container_url $svc $user)
+                        if [ -n "$container_url" ]; then
+                            url="http://$container_url"
+                            echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}${url}${RESET} $(check_url "$url")"
+                        fi
+                        ;;
+                esac
             fi
         done
     done
@@ -393,7 +446,7 @@ status_cmd() {
         if [ -n "$NB_IP" ]; then
             echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}NetBird VPN${RESET}"
             echo -e "${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
-            echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}VPN IP: $NB_IP${RESET}"
+            echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}VPN IP:${RESET} $NB_IP"
         fi
     fi
 
@@ -431,18 +484,18 @@ clear_cmd() {
 
     echo -e "  ${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
     systemctl --user stop gitea torrserver homepage 2>/dev/null
-    sudo systemctl stop gitea-runner netbird rest-server passbolt passbolt-db backrest nginx-proxy-manager faucet 2>/dev/null
+    sudo systemctl stop gitea-runner netbird rest-server keeweb traefik backrest faucet 2>/dev/null
 
     echo -e "  ${NEON_YELLOW}▸ Удаление контейнеров...${RESET}"
-    podman rm -f systemd-gitea systemd-torrserver systemd-homepage 2>/dev/null
-    sudo podman rm -f gitea-runner netbird rest-server passbolt passbolt-db backrest nginx-proxy-manager faucet 2>/dev/null
+    sudo podman rm -f gitea-runner netbird rest-server keeweb traefik backrest faucet 2>/dev/null
+    podman rm -f gitea torrserver homepage 2>/dev/null
 
     echo -e "  ${NEON_YELLOW}▸ Удаление Quadlet файлов...${RESET}"
-    rm -f ~/.config/containers/systemd/{gitea,torrserver,homepage}.container
-    sudo rm -f /etc/containers/systemd/{gitea-runner,netbird,rest-server,passbolt,passbolt-db,backrest,nginx-proxy-manager,faucet}.container
+    rm -f "$HOME/.config/containers/systemd"/{gitea,torrserver,homepage}.container
+    sudo rm -f /etc/containers/systemd/{gitea-runner,netbird,rest-server,keeweb,traefik,backrest,faucet}.container
 
-    systemctl --user daemon-reload
     sudo systemctl daemon-reload
+    systemctl --user daemon-reload
 
     read -rp "  Удалить все данные? [y/N]: " DEL_DATA
     if [[ "$DEL_DATA" =~ ^[Yy]$ ]]; then
@@ -461,7 +514,7 @@ case "${1:-status}" in
     status) status_cmd ;;
     logs) 
         case "$2" in
-            netbird|gitea-runner|rest-server|passbolt|passbolt-db|backrest|nginx-proxy-manager|faucet) sudo journalctl -u "$2" -f ;;
+            netbird|gitea-runner|rest-server|keeweb|traefik|backrest|faucet) sudo journalctl -u "$2" -f ;;
             gitea|torrserver|homepage) journalctl --user -u "$2" -f ;;
             *) echo "Usage: infra logs <service>"; exit 1 ;;
         esac
@@ -469,21 +522,21 @@ case "${1:-status}" in
     stop)
         echo -e "${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
         systemctl --user stop gitea torrserver homepage 2>/dev/null
-        sudo systemctl stop gitea-runner netbird rest-server passbolt passbolt-db backrest nginx-proxy-manager faucet 2>/dev/null
+        sudo systemctl stop gitea-runner netbird rest-server keeweb traefik backrest faucet 2>/dev/null
         echo -e "  ${ICON_OK} Services stopped"
         ;;
     start)
         echo -e "${NEON_GREEN}▸ Запуск сервисов...${RESET}"
-        sudo systemctl start passbolt-db
+        sudo systemctl start traefik 2>/dev/null
         sleep 5
-        sudo systemctl start passbolt gitea-runner netbird rest-server backrest nginx-proxy-manager faucet 2>/dev/null
+        sudo systemctl start gitea-runner netbird rest-server keeweb backrest faucet 2>/dev/null
         systemctl --user start gitea torrserver homepage 2>/dev/null
         echo -e "  ${ICON_OK} Services started"
         ;;
     restart)
         echo -e "${NEON_CYAN}▸ Перезапуск $2...${RESET}"
         case "$2" in
-            netbird|gitea-runner|rest-server|passbolt|passbolt-db|backrest|nginx-proxy-manager|faucet) sudo systemctl restart "$2" ;;
+            netbird|gitea-runner|rest-server|keeweb|traefik|backrest|faucet) sudo systemctl restart "$2" ;;
             gitea|torrserver|homepage) systemctl --user restart "$2" ;;
             *) echo "Unknown service: $2"; exit 1 ;;
         esac
@@ -525,12 +578,13 @@ EOF
 
 chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/torrserver.container"
 systemctl --user daemon-reload
-systemctl --user start torrserver.service
-print_success "TorrServer запущен"
+systemctl --user enable --now torrserver.service
+sleep 3
+print_success "TorrServer запущен через Quadlet"
 print_url "http://$SERVER_IP:8090"
 
 # =============== 9. GITEA (rootless QUADLET) ===============
-print_step "Создание Gitea (Quadlet)"
+print_step "Создание Gitea (Quadlet с лейблами Traefik)"
 
 cat > "$QUADLET_USER_DIR/gitea.container" <<EOF
 [Unit]
@@ -544,9 +598,20 @@ Image=docker.io/gitea/gitea:latest
 Volume=$CURRENT_HOME/infra/volumes/gitea:/data:Z
 PublishPort=3000:3000
 PublishPort=2222:22
-Environment=GITEA__server__ROOT_URL=http://$SERVER_IP:3000/
+Environment=GITEA__server__ROOT_URL=https://git.lab
+Environment=GITEA__server__HTTP_PORT=3000
+Environment=GITEA__server__DOMAIN=git.lab
+Environment=GITEA__server__SSH_DOMAIN=git.lab
 Environment=GITEA__actions__ENABLED=true
-Environment=GITEA__repository_upload__ENABLED=true
+# Traefik labels
+Label=traefik.enable=true
+Label=traefik.http.routers.gitea-http.rule=Host(\`git.lab\`)
+Label=traefik.http.routers.gitea-http.entrypoints=web
+Label=traefik.http.routers.gitea-http.middlewares=https-redirect@file
+Label=traefik.http.routers.gitea-https.rule=Host(\`git.lab\`)
+Label=traefik.http.routers.gitea-https.entrypoints=websecure
+Label=traefik.http.routers.gitea-https.tls=true
+Label=traefik.http.services.gitea.loadbalancer.server.port=3000
 
 [Service]
 Restart=always
@@ -560,9 +625,9 @@ EOF
 
 chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/gitea.container"
 systemctl --user daemon-reload
-systemctl --user start gitea.service
-print_success "Gitea запущена"
-print_url "http://$SERVER_IP:3000"
+systemctl --user enable --now gitea.service
+print_success "Gitea запущена через Quadlet"
+print_url "https://git.lab (после настройки Traefik и hosts)"
 
 # =============== 10. GITEA RUNNER (rootful QUADLET) ===============
 print_step "Настройка Gitea Runner"
@@ -611,8 +676,8 @@ EOF
 
         sudo chmod 644 "$QUADLET_SYSTEM_DIR/gitea-runner.container"
         sudo systemctl daemon-reload
-        sudo systemctl start gitea-runner.service
-        print_success "Gitea Runner запущен"
+        sudo systemctl enable --now gitea-runner.service
+        print_success "Gitea Runner запущен через Quadlet"
     fi
 else
     print_warning "Gitea API не доступен. Runner можно настроить позже"
@@ -659,8 +724,8 @@ EOF
 
     sudo chmod 644 "$QUADLET_SYSTEM_DIR/netbird.container"
     sudo systemctl daemon-reload
-    sudo systemctl start netbird.service
-    print_success "NetBird запущен"
+    sudo systemctl enable --now netbird.service
+    print_success "NetBird запущен через Quadlet"
 else
     print_info "NetBird пропущен"
 fi
@@ -700,8 +765,8 @@ EOF
 
 sudo chmod 644 "$QUADLET_SYSTEM_DIR/rest-server.container"
 sudo systemctl daemon-reload
-sudo systemctl start rest-server.service
-print_success "Restic REST сервер запущен"
+sudo systemctl enable --now rest-server.service
+print_success "Restic REST сервер запущен через Quadlet"
 print_url "http://$SERVER_IP:8000"
 
 # =============== 13. BACKREST (rootful QUADLET) ===============
@@ -748,17 +813,21 @@ EOF
 
 sudo chmod 644 "$QUADLET_SYSTEM_DIR/backrest.container"
 sudo systemctl daemon-reload
-sudo systemctl start backrest.service
-print_success "Backrest запущен"
+sudo systemctl enable --now backrest.service
+print_success "Backrest запущен через Quadlet"
 print_url "http://$SERVER_IP:9898"
 
 # =============== 14. FAUCET (rootful QUADLET) ===============
 print_step "Настройка Faucet (MCP Server + GUI)"
 
+# Создаём директории
+mkdir -p "$FAUCET_DIR"/{data,config}
+
+# Генерируем пароль
 FAUCET_PASS=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
 FAUCET_JWT=$(openssl rand -base64 32)
 
-# Создание конфига
+# Создаём конфиг
 cat > "$FAUCET_DIR/config/faucet.yaml" <<EOF
 database:
   driver: sqlite
@@ -775,13 +844,17 @@ admin:
       password: ${FAUCET_PASS}
 EOF
 
+# Права доступа (ВАЖНО для избежания readonly database)
+chmod 755 "$FAUCET_DIR"
+chmod 755 "$FAUCET_DIR/config"
 chmod 644 "$FAUCET_DIR/config/faucet.yaml"
+chmod 777 "$FAUCET_DIR/data"
 touch "$FAUCET_DIR/data/faucet.db"
 chmod 666 "$FAUCET_DIR/data/faucet.db"
 echo "$FAUCET_PASS" > "$FAUCET_DIR/admin_password.txt"
 chmod 600 "$FAUCET_DIR/admin_password.txt"
 
-# Quadlet файл
+# Quadlet файл для Faucet
 sudo tee "$QUADLET_SYSTEM_DIR/faucet.container" > /dev/null <<EOF
 [Unit]
 Description=Faucet MCP Server with GUI
@@ -794,8 +867,17 @@ ContainerName=faucet
 Volume=$FAUCET_DIR/data:/data:Z
 Volume=$FAUCET_DIR/config:/config:Z
 PublishPort=8082:8080
-PublishPort=8083:8081
 Environment=FAUCET_CONFIG=/config/faucet.yaml
+User=$CURRENT_UID:$CURRENT_UID
+# Traefik labels
+Label=traefik.enable=true
+Label=traefik.http.routers.faucet-http.rule=Host(\`keys.lab\`)
+Label=traefik.http.routers.faucet-http.entrypoints=web
+Label=traefik.http.routers.faucet-http.middlewares=https-redirect@file
+Label=traefik.http.routers.faucet-https.rule=Host(\`keys.lab\`)
+Label=traefik.http.routers.faucet-https.entrypoints=websecure
+Label=traefik.http.routers.faucet-https.tls=true
+Label=traefik.http.services.faucet.loadbalancer.server.port=8080
 
 [Service]
 Restart=always
@@ -808,29 +890,112 @@ EOF
 
 sudo chmod 644 "$QUADLET_SYSTEM_DIR/faucet.container"
 sudo systemctl daemon-reload
-sudo systemctl start faucet.service
+sudo systemctl enable --now faucet.service
 
-print_success "Faucet запущен"
-print_url "http://$SERVER_IP:8082"
+print_success "Faucet запущен через Quadlet"
 print_info "Логин: admin / Пароль: $FAUCET_PASS"
+print_url "https://keys.lab (после настройки Traefik и hosts)"
 
-# =============== 15. NGINX PROXY MANAGER (rootful QUADLET) ===============
-print_step "Настройка Nginx Proxy Manager"
+# =============== 15. TRAEFIK (rootful QUADLET) ===============
+print_step "Настройка Traefik (Reverse Proxy с дашбордом)"
 
-sudo tee "$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container" > /dev/null <<EOF
+# Статическая конфигурация Traefik
+cat > "$TRAEFIK_DIR/config/traefik.yml" <<EOF
+api:
+  dashboard: true
+  debug: true
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+  traefik:
+    address: ":8080"
+
+serversTransport:
+  insecureSkipVerify: true
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: podman
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+EOF
+
+# Динамическая конфигурация Traefik
+cat > "$TRAEFIK_DIR/config/dynamic.yml" <<EOF
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/lab-cert.pem
+      keyFile: /etc/traefik/certs/lab-key.pem
+  options:
+    default:
+      minVersion: VersionTLS12
+
+http:
+  middlewares:
+    https-redirect:
+      redirectScheme:
+        scheme: https
+        permanent: true
+    security-headers:
+      headers:
+        frameDeny: true
+        sslRedirect: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+        customFrameOptionsValue: "SAMEORIGIN"
+    auth-basic:
+      basicAuth:
+        users:
+          - "admin:\$2y\$05\$YourHashedPasswordHere"  # ЗАМЕНИТЕ НА СГЕНЕРИРОВАННЫЙ
+
+  routers:
+    traefik-dashboard:
+      rule: "Host(\`traefik.lab\`)"
+      service: api@internal
+      entryPoints:
+        - traefik
+      middlewares:
+        - auth-basic
+EOF
+
+# Quadlet файл для Traefik
+sudo tee "$QUADLET_SYSTEM_DIR/traefik.container" > /dev/null <<EOF
 [Unit]
-Description=Nginx Proxy Manager
+Description=Traefik Reverse Proxy
 After=network-online.target
 Wants=podman-auto-update.service
 
 [Container]
-Image=docker.io/jc21/nginx-proxy-manager:latest
-ContainerName=nginx-proxy-manager
-Volume=$NPM_DIR/data:/data:Z
-Volume=$NPM_DIR/letsencrypt:/etc/letsencrypt:Z
+Image=docker.io/traefik:latest
+ContainerName=traefik
+Volume=$TRAEFIK_DIR/config/traefik.yml:/etc/traefik/traefik.yml:Z
+Volume=$TRAEFIK_DIR/config/dynamic.yml:/etc/traefik/dynamic.yml:Z
+Volume=$CERT_DIR:/etc/traefik/certs:ro,Z
+Volume=/var/run/docker.sock:/var/run/docker.sock:ro,Z
 PublishPort=80:80
 PublishPort=443:443
-PublishPort=81:81
+PublishPort=8080:8080
+# Traefik self-labels for dashboard
+Label=traefik.enable=true
+Label=traefik.http.routers.dashboard.rule=Host(\`traefik.lab\`)
+Label=traefik.http.routers.dashboard.service=api@internal
+Label=traefik.http.routers.dashboard.middlewares=auth-basic@file
 
 [Service]
 Restart=always
@@ -841,148 +1006,38 @@ NotifyAccess=all
 WantedBy=multi-user.target
 EOF
 
-sudo chmod 644 "$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container"
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/traefik.container"
 sudo systemctl daemon-reload
-sudo systemctl start nginx-proxy-manager.service
+sudo systemctl enable --now traefik.service
 
-print_success "Nginx Proxy Manager запущен"
-print_url "http://$SERVER_IP:81"
-print_info "Логин: admin@example.com / Пароль: changeme"
+print_success "Traefik запущен через Quadlet"
+print_url "http://$SERVER_IP:8080 (дашборд)"
+print_url "https://traefik.lab (после настройки hosts)"
 
-# =============== 16. PASSBOLT + MARIADB (rootful QUADLET) ===============
-print_step "Настройка Passbolt с MariaDB"
+# =============== 16. KEEWEB (rootful QUADLET) ===============
+print_step "Настройка KeeWeb (менеджер паролей)"
 
-# Генерация пароля для БД
-PASSBOLT_DB_PASS=$(openssl rand -base64 24 | tr -d "=+/" | cut -c1-24)
-echo "$PASSBOLT_DB_PASS" | sudo tee "$PASSBOLT_DIR/db_password.txt" > /dev/null
-sudo chmod 600 "$PASSBOLT_DIR/db_password.txt"
-
-# Создание сети для Passbolt (используем существующую podman)
-sudo podman network create passbolt-net 2>/dev/null || true
-
-# MariaDB Quadlet файл
-sudo tee "$QUADLET_SYSTEM_DIR/passbolt-db.container" > /dev/null <<EOF
+# Quadlet файл для KeeWeb
+sudo tee "$QUADLET_SYSTEM_DIR/keeweb.container" > /dev/null <<EOF
 [Unit]
-Description=Passbolt MariaDB Database
+Description=KeeWeb Password Manager
 After=network-online.target
 Wants=podman-auto-update.service
 
 [Container]
-Image=docker.io/mariadb:10.11
-ContainerName=passbolt-db
-Network=podman
-Volume=$PASSBOLT_DIR/mariadb:/var/lib/mysql:Z
-Environment=MARIADB_USER=passbolt
-Environment=MARIADB_PASSWORD=$PASSBOLT_DB_PASS
-Environment=MARIADB_DATABASE=passbolt
-Environment=MARIADB_RANDOM_ROOT_PASSWORD=1
-
-[Service]
-Restart=always
-Type=notify
-NotifyAccess=all
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo chmod 644 "$QUADLET_SYSTEM_DIR/passbolt-db.container"
-
-# Генерация GPG ключей для Passbolt
-print_info "Генерация GPG ключей для Passbolt..."
-sudo mkdir -p "$PASSBOLT_DIR/gpg"
-sudo chmod 700 "$PASSBOLT_DIR/gpg"
-
-# Создаем временную директорию для генерации ключей
-TMP_GPG_DIR=$(mktemp -d)
-chmod 700 "$TMP_GPG_DIR"
-
-cat > "$TMP_GPG_DIR/gpg-batch" <<EOF
-%no-protection
-Key-Type: RSA
-Key-Length: 4096
-Name-Real: Passbolt
-Name-Email: passbolt@devops.lab
-Expire-Date: 0
-%commit
-EOF
-
-gpg --homedir "$TMP_GPG_DIR" --batch --gen-key "$TMP_GPG_DIR/gpg-batch"
-
-# Экспорт ключей
-gpg --homedir "$TMP_GPG_DIR" --export --armor passbolt@devops.lab | sudo tee "$PASSBOLT_DIR/gpg/serverkey_public.asc" > /dev/null
-gpg --homedir "$TMP_GPG_DIR" --export-secret-key --armor passbolt@devops.lab | sudo tee "$PASSBOLT_DIR/gpg/serverkey_private.asc" > /dev/null
-
-# Получение fingerprint
-FINGERPRINT=$(gpg --homedir "$TMP_GPG_DIR" --list-keys --with-colons | grep '^fpr:' | head -1 | cut -d: -f10)
-rm -rf "$TMP_GPG_DIR"
-
-# Права на ключи
-sudo chmod 644 "$PASSBOLT_DIR/gpg/serverkey_public.asc"
-sudo chmod 600 "$PASSBOLT_DIR/gpg/serverkey_private.asc"
-sudo chown -R $CURRENT_USER:$CURRENT_USER "$PASSBOLT_DIR/gpg"
-
-# Генерация JWT ключа
-sudo mkdir -p "$PASSBOLT_DIR/jwt"
-openssl rand -base64 32 | sudo tee "$PASSBOLT_DIR/jwt/jwt.key" > /dev/null
-sudo chmod 640 "$PASSBOLT_DIR/jwt/jwt.key"
-sudo chown -R $CURRENT_USER:$CURRENT_USER "$PASSBOLT_DIR/jwt"
-
-# Создание конфига Passbolt
-sudo tee "$PASSBOLT_DIR/config.php" > /dev/null <<EOF
-<?php
-return [
-    'App' => [
-        'fullBaseUrl' => 'https://passbolt.lab',
-        'registration' => ['public' => false]
-    ],
-    'Database' => [
-        'host' => 'passbolt-db',
-        'port' => 3306,
-        'username' => 'passbolt',
-        'password' => '$PASSBOLT_DB_PASS',
-        'database' => 'passbolt',
-        'driver' => 'Cake\Database\Driver\Mysql'
-    ],
-    'passbolt' => [
-        'gpg' => [
-            'serverKey' => [
-                'fingerprint' => '$FINGERPRINT',
-                'public' => '/etc/passbolt/gpg/serverkey_public.asc',
-                'private' => '/etc/passbolt/gpg/serverkey_private.asc'
-            ]
-        ],
-        'jwt' => [
-            'key' => file_get_contents('/etc/passbolt/jwt/jwt.key')
-        ]
-    ]
-];
-EOF
-
-sudo chmod 644 "$PASSBOLT_DIR/config.php"
-sudo chown $CURRENT_USER:$CURRENT_USER "$PASSBOLT_DIR/config.php"
-
-# Passbolt Quadlet файл
-sudo tee "$QUADLET_SYSTEM_DIR/passbolt.container" > /dev/null <<EOF
-[Unit]
-Description=Passbolt Password Manager
-After=network-online.target passbolt-db.service
-Wants=podman-auto-update.service
-Requires=passbolt-db.service
-
-[Container]
-Image=docker.io/passbolt/passbolt:latest
-ContainerName=passbolt
-Network=podman
+Image=ghcr.io/keeweb/keeweb:latest
+ContainerName=keeweb
+Volume=$KEEWEB_DIR/data:/config:Z
 PublishPort=8080:80
-Volume=$PASSBOLT_DIR/gpg:/etc/passbolt/gpg:Z
-Volume=$PASSBOLT_DIR/jwt:/etc/passbolt/jwt:Z
-Volume=$PASSBOLT_DIR/config.php:/etc/passbolt/passbolt.php:Z
-Environment=DATASOURCES_DEFAULT_HOST=passbolt-db
-Environment=DATASOURCES_DEFAULT_USERNAME=passbolt
-Environment=DATASOURCES_DEFAULT_PASSWORD=$PASSBOLT_DB_PASS
-Environment=DATASOURCES_DEFAULT_DATABASE=passbolt
-Environment=APP_FULL_BASE_URL=http://$SERVER_IP:8080
+# Traefik labels
+Label=traefik.enable=true
+Label=traefik.http.routers.keeweb-http.rule=Host(\`keeweb.lab\`)
+Label=traefik.http.routers.keeweb-http.entrypoints=web
+Label=traefik.http.routers.keeweb-http.middlewares=https-redirect@file
+Label=traefik.http.routers.keeweb-https.rule=Host(\`keeweb.lab\`)
+Label=traefik.http.routers.keeweb-https.entrypoints=websecure
+Label=traefik.http.routers.keeweb-https.tls=true
+Label=traefik.http.services.keeweb.loadbalancer.server.port=80
 
 [Service]
 Restart=always
@@ -993,20 +1048,13 @@ NotifyAccess=all
 WantedBy=multi-user.target
 EOF
 
-sudo chmod 644 "$QUADLET_SYSTEM_DIR/passbolt.container"
-
-# Запуск MariaDB и Passbolt
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/keeweb.container"
 sudo systemctl daemon-reload
-sudo systemctl start passbolt-db.service
-print_info "Ожидание инициализации MariaDB (20 секунд)..."
-sleep 20
-sudo systemctl start passbolt.service
+sudo systemctl enable --now keeweb.service
 
-print_success "Passbolt с MariaDB запущен"
+print_success "KeeWeb запущен через Quadlet"
 print_url "http://$SERVER_IP:8080"
-print_info "Пароль БД: $PASSBOLT_DB_PASS"
-print_info "Для инициализации Passbolt выполните:"
-print_info "sudo podman exec -it passbolt bash -c \"su -s /bin/bash www-data -c './bin/cake passbolt install --username=admin@passbolt.lab --first-name=Admin --last-name=User'\""
+print_url "https://keeweb.lab (после настройки Traefik и hosts)"
 
 # =============== 17. HOMEPAGE (rootless QUADLET) ===============
 print_step "Настройка Homepage"
@@ -1014,27 +1062,68 @@ print_step "Настройка Homepage"
 echo ""
 print_info "🌤 Хочешь видеть погоду на дашборде?"
 print_info "1. Зарегистрируйся на https://home.openweathermap.org/users/sign_up"
-print_info "2. Получи бесплатный API ключ"
-print_info "3. Введи его ниже (или Enter чтобы пропустить)"
+print_info "2. Получи API ключ"
 echo ""
-read -rp "  OpenWeatherMap API ключ: " WEATHER_KEY
+read -rp "  OpenWeatherMap API ключ (Enter чтобы пропустить): " WEATHER_KEY
 
 HOMEPAGE_CONFIG_DIR="$VOLUMES_DIR/homepage/config"
 mkdir -p "$HOMEPAGE_CONFIG_DIR"
 
-if [ -n "$WEATHER_KEY" ]; then
-    WEATHER_CONFIG="
-  - name: \"Погода в вашем городе\"
-    type: \"openweathermap\"
-    apiKey: \"$WEATHER_KEY\"
-    units: \"metric\"
-    city: \"YourCity\"
-    country: \"RU\""
-else
-    WEATHER_CONFIG=""
-fi
+# Проверяем и исправляем права
+chmod 755 "$HOMEPAGE_CONFIG_DIR"
+chmod 644 "$HOMEPAGE_CONFIG_DIR"/*.yaml 2>/dev/null || true
 
-# Конфиг Homepage
+# Создаём конфиг services.yaml
+cat > "$HOMEPAGE_CONFIG_DIR/services.yaml" <<EOF
+---
+Инфраструктура:
+  - KeeWeb:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/keepass.png
+      href: https://keeweb.lab
+      description: "Менеджер паролей"
+  - Faucet:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/faucet.png
+      href: https://keys.lab
+      description: "API-ключи для AI (MCP)"
+  - Gitea:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gitea.png
+      href: https://git.lab
+      description: "Git репозиторий"
+  - Backrest:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
+      href: https://backup.lab
+      description: "Управление бэкапами"
+  - TorrServer:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/torrent.png
+      href: https://torrent.lab
+      description: "Торрент стриминг"
+
+Администрирование:
+  - Traefik:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/traefik.png
+      href: https://traefik.lab
+      description: "Reverse proxy + дашборд"
+  - NetBird:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
+      href: https://app.netbird.io
+      description: "VPN управление"
+  - Restic REST:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
+      href: http://$SERVER_IP:8000
+      description: "Хранилище бэкапов"
+
+Доступ напрямую:
+  - Faucet (прямой):
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/faucet.png
+      href: http://$SERVER_IP:8082
+      description: "UI без Traefik"
+  - KeeWeb (прямой):
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/keepass.png
+      href: http://$SERVER_IP:8080
+      description: "Без Traefik"
+EOF
+
+# Создаём конфиг settings.yaml
 cat > "$HOMEPAGE_CONFIG_DIR/settings.yaml" <<EOF
 ---
 title: "DevOps Lab Dashboard"
@@ -1048,71 +1137,23 @@ statusPosition: "bottom"
 search:
   provider: duckduckgo
   target: _blank
-information:
-$WEATHER_CONFIG
 EOF
 
-cat > "$HOMEPAGE_CONFIG_DIR/services.yaml" <<EOF
----
-Инфраструктура:
-  - Passbolt:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/passbolt.png
-      href: https://passbolt.lab
-      description: "Менеджер паролей"
-      container: passbolt
-  - Faucet:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/faucet.png
-      href: https://keys.lab
-      description: "API-ключи для AI"
-      container: faucet
-  - Backrest:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
-      href: https://backup.lab
-      description: "Управление бэкапами"
-      container: backrest
-  - Gitea:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gitea.png
-      href: https://git.lab
-      description: "Git репозиторий"
-      container: systemd-gitea
-  - TorrServer:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/torrent.png
-      href: https://torrent.lab
-      description: "Торрент стриминг"
-      container: systemd-torrserver
+# Добавляем погоду если есть ключ
+if [ -n "$WEATHER_KEY" ]; then
+  cat >> "$HOMEPAGE_CONFIG_DIR/settings.yaml" <<EOF
 
-Windows Клиенты:
-  - NetBird VPN:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
-      href: https://pkgs.netbird.io/windows
-      description: "Для доступа из любой точки"
-  - Bitwarden Desktop:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/bitwarden.png
-      href: https://bitwarden.com/download/
-      description: "Клиент для Passbolt"
-  - Restic:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
-      href: https://github.com/restic/restic/releases
-      description: "Бэкапы Windows"
-
-Администрирование:
-  - Nginx Proxy Manager:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/nginx-proxy-manager.png
-      href: http://$SERVER_IP:81
-      description: "Reverse proxy GUI"
-      container: nginx-proxy-manager
-  - NetBird:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
-      href: https://app.netbird.io
-      description: "VPN управление"
-      container: netbird
-  - Restic REST:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
-      href: http://$SERVER_IP:8000
-      description: "Хранилище бэкапов"
-      container: rest-server
+weather:
+  - name: "Погода в Барнауле"
+    type: "openweathermap"
+    apiKey: "$WEATHER_KEY"
+    units: "metric"
+    city: "Barnaul"
+    country: "RU"
 EOF
+fi
 
+chmod 644 "$HOMEPAGE_CONFIG_DIR"/*.yaml
 chown -R $CURRENT_USER:$CURRENT_USER "$HOMEPAGE_CONFIG_DIR"
 
 # Quadlet файл для Homepage
@@ -1126,12 +1167,19 @@ Wants=podman-auto-update.service
 Label=io.containers.autoupdate=registry
 Image=ghcr.io/gethomepage/homepage:latest
 ContainerName=homepage
-Volume=$HOMEPAGE_CONFIG_DIR:/app/config:Z
+Volume=$HOMEPAGE_CONFIG_DIR:/app/config:ro,Z
 Volume=/var/run/docker.sock:/var/run/docker.sock:ro,Z
 PublishPort=3001:3000
-Environment=PUID=$CURRENT_UID
-Environment=PGID=$CURRENT_UID
-Environment=HOMEPAGE_ALLOWED_HOSTS=$SERVER_IP:3001,localhost:3001,127.0.0.1:3001,home.lab:3001,$(hostname):3001
+Environment=HOMEPAGE_ALLOWED_HOSTS=$SERVER_IP:3001,localhost:3001,home.lab:3001
+# Traefik labels
+Label=traefik.enable=true
+Label=traefik.http.routers.homepage-http.rule=Host(\`home.lab\`)
+Label=traefik.http.routers.homepage-http.entrypoints=web
+Label=traefik.http.routers.homepage-http.middlewares=https-redirect@file
+Label=traefik.http.routers.homepage-https.rule=Host(\`home.lab\`)
+Label=traefik.http.routers.homepage-https.entrypoints=websecure
+Label=traefik.http.routers.homepage-https.tls=true
+Label=traefik.http.services.homepage.loadbalancer.server.port=3000
 
 [Service]
 Restart=always
@@ -1144,13 +1192,22 @@ EOF
 
 chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/homepage.container"
 systemctl --user daemon-reload
-systemctl --user start homepage.service
+systemctl --user enable --now homepage.service
 
-print_success "Homepage запущен"
+# Проверяем что конфиги применились
+sleep 5
+if journalctl --user -u homepage.service -n 20 --no-pager 2>&1 | grep -q "config"; then
+    print_success "Homepage запущен через Quadlet с конфигурацией"
+else
+    print_warning "Проверьте логи: journalctl --user -u homepage.service -f"
+fi
+
+print_success "Homepage запущен через Quadlet"
 print_url "http://$SERVER_IP:3001"
+print_url "https://home.lab (после настройки Traefik и hosts)"
 
 # =============== 18. ФИНАЛЬНЫЙ ВЫВОД ===============
-print_header "🚀 ИНФРАСТРУКТУРА ПОЛНОСТЬЮ ГОТОВА"
+print_header "🚀 ИНФРАСТРУКТУРА ПОЛНОСТЬЮ ГОТОВА (QUADLET)"
 
 cat <<EOF
 
@@ -1158,40 +1215,112 @@ ${NEON_GREEN}╔═════════════════════�
 ${NEON_GREEN}║         🔌 ДОСТУП ДЛЯ ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ         ║${RESET}
 ${NEON_GREEN}╚══════════════════════════════════════════════════════════╝${RESET}
 
-${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
+${NEON_CYAN}🏠 ДАШБОРД${RESET}
   ${NEON_GREEN}●${RESET} Homepage:            ${NEON_CYAN}http://$SERVER_IP:3001${RESET}
-  ${NEON_GREEN}●${RESET} Nginx Proxy Manager: ${NEON_CYAN}http://$SERVER_IP:81${RESET} (admin@example.com / changeme)
+  ${NEON_GREEN}●${RESET} Homepage (домен):    ${NEON_CYAN}https://home.lab${RESET}
 
-${NEON_CYAN}🔐 МЕНЕДЖЕРЫ СЕКРЕТОВ${RESET}
-  ${NEON_GREEN}●${RESET} Passbolt:            ${NEON_CYAN}http://$SERVER_IP:8080${RESET}
-  ${MUTED_GRAY}  └─ Пароль БД: ${NEON_CYAN}$PASSBOLT_DB_PASS${RESET}
-  ${MUTED_GRAY}  └─ Инициализация: sudo podman exec -it passbolt bash -c "su -s /bin/bash www-data -c './bin/cake passbolt install --username=admin@passbolt.lab --first-name=Admin --last-name=User'"
-  ${NEON_GREEN}●${RESET} Faucet:              ${NEON_CYAN}http://$SERVER_IP:8082${RESET}
+${NEON_CYAN}🔄 REVERSE PROXY${RESET}
+  ${NEON_GREEN}●${RESET} Traefik Dashboard:   ${NEON_CYAN}http://$SERVER_IP:8080${RESET}
+  ${NEON_GREEN}●${RESET} Traefik (домен):     ${NEON_CYAN}https://traefik.lab${RESET}
+  ${MUTED_GRAY}  └─ Basic auth: настройте в ~/infra/traefik/config/dynamic.yml
+
+${NEON_CYAN}🔐 МЕНЕДЖЕРЫ ПАРОЛЕЙ${RESET}
+  ${NEON_GREEN}●${RESET} KeeWeb:              ${NEON_CYAN}http://$SERVER_IP:8080${RESET}
+  ${NEON_GREEN}●${RESET} KeeWeb (домен):      ${NEON_CYAN}https://keeweb.lab${RESET}
+  ${NEON_GREEN}●${RESET} Faucet (UI):         ${NEON_CYAN}http://$SERVER_IP:8082${RESET}
+  ${NEON_GREEN}●${RESET} Faucet (MCP):        ${NEON_CYAN}http://$SERVER_IP:8082/mcp${RESET}
+  ${NEON_GREEN}●${RESET} Faucet (домен):      ${NEON_CYAN}https://keys.lab${RESET}
   ${MUTED_GRAY}  └─ Логин: admin / Пароль: ${NEON_CYAN}$FAUCET_PASS${RESET}
 
 ${NEON_CYAN}📦 РАЗРАБОТКА И БЭКАПЫ${RESET}
   ${NEON_GREEN}●${RESET} Gitea:               ${NEON_CYAN}http://$SERVER_IP:3000${RESET}
+  ${NEON_GREEN}●${RESET} Gitea (домен):       ${NEON_CYAN}https://git.lab${RESET}
   ${NEON_GREEN}●${RESET} Backrest:            ${NEON_CYAN}http://$SERVER_IP:9898${RESET}
+  ${NEON_GREEN}●${RESET} Backrest (домен):    ${NEON_CYAN}https://backup.lab${RESET}
   ${NEON_GREEN}●${RESET} Restic REST:         ${NEON_CYAN}http://$SERVER_IP:8000${RESET} (user: restic)
 
 ${NEON_CYAN}🎬 МЕДИА${RESET}
   ${NEON_GREEN}●${RESET} TorrServer:          ${NEON_CYAN}http://$SERVER_IP:8090${RESET}
+  ${NEON_GREEN}●${RESET} TorrServer (домен):  ${NEON_CYAN}https://torrent.lab${RESET}
 
 ${NEON_CYAN}🪟 WINDOWS КЛИЕНТЫ${RESET}
   ${NEON_GREEN}●${RESET} NetBird:     ${NEON_CYAN}https://pkgs.netbird.io/windows${RESET}
-  ${NEON_GREEN}●${RESET} Bitwarden:   ${NEON_CYAN}https://bitwarden.com/download/${RESET}
+  ${NEON_GREEN}●${RESET} KeeWeb:      ${NEON_CYAN}https://keeweb.info${RESET}
   ${NEON_GREEN}●${RESET} Restic:      ${NEON_CYAN}https://github.com/restic/restic/releases${RESET}
 
-${NEON_BLUE}📋 СЛЕДУЮЩИЕ ШАГИ${RESET}
-  ${NEON_YELLOW}1.${RESET} Зайди в Nginx Proxy Manager (http://$SERVER_IP:81) и настрой прокси для доменов
-  ${NEON_YELLOW}2.${RESET} Инициализируй Passbolt командой из вывода выше
-  ${NEON_YELLOW}3.${RESET} Добавь записи в hosts файл на компьютере: $SERVER_IP passbolt.lab git.lab backup.lab home.lab torrent.lab keys.lab
-  ${NEON_YELLOW}4.${RESET} Настрой Faucet через веб-интерфейс (добавь API ключи)
+${NEON_BLUE}📋 ДЛЯ РАБОТЫ ДОМЕНОВ${RESET}
+  ${NEON_YELLOW}1.${RESET} Добавьте в hosts файл на Windows (C:\Windows\System32\drivers\etc\hosts):
+     ${NEON_CYAN}$SERVER_IP keeweb.lab keys.lab git.lab backup.lab home.lab torrent.lab traefik.lab${RESET}
+  ${NEON_YELLOW}2.${RESET} Запустите от администратора: ${NEON_CYAN}ipconfig /flushdns${RESET}
+  ${NEON_YELLOW}3.${RESET} Откройте любой домен в браузере (например, https://keeweb.lab)
 
-${NEON_GREEN}🎉 УПРАВЛЕНИЕ: ${NEON_CYAN}infra status${RESET}
-${NEON_GREEN}📋 ЛОГИ:       ${NEON_CYAN}infra logs <service>${RESET}
-${NEON_GREEN}💾 БЭКАП:      ${NEON_CYAN}infra backup${RESET}
+${NEON_GREEN}🎉 УПРАВЛЕНИЕ ЧЕРЕЗ QUADLET:${RESET}
+  ${NEON_CYAN}infra status${RESET}              - статус всех сервисов
+  ${NEON_CYAN}systemctl --user start gitea${RESET}   - ручной запуск rootless сервиса
+  ${NEON_CYAN}sudo systemctl start traefik${RESET}   - ручной запуск rootful сервиса
+  ${NEON_CYAN}infra logs <service>${RESET}           - логи сервиса
+  ${NEON_CYAN}infra backup${RESET}                   - бэкап всех данных
+  ${NEON_CYAN}infra clear${RESET}                     - полное удаление
+
+${NEON_GREEN}🔑 ВСЕ ПАРОЛИ СОХРАНЕНЫ В:${RESET} ${NEON_CYAN}~/infra/credentials.txt${RESET}
 EOF
+
+# Сохраняем все credentials
+cat > "$INFRA_DIR/credentials.txt" <<EOF
+# ========================================
+# INFRASTRUCTURE CREDENTIALS v12.0.0 (QUADLET)
+# Сгенерировано: $(date)
+# ========================================
+
+=== TRAEFIK ===
+Dashboard: http://$SERVER_IP:8080
+Domain: https://traefik.lab
+Basic auth: настройте в ~/infra/traefik/config/dynamic.yml
+
+=== KEEWEB ===
+URL: http://$SERVER_IP:8080
+Domain: https://keeweb.lab
+
+=== FAUCET ===
+Admin UI: http://$SERVER_IP:8082
+Username: admin
+Password: $FAUCET_PASS
+MCP endpoint: http://$SERVER_IP:8082/mcp
+Domain: https://keys.lab
+
+=== GITEA ===
+URL: http://$SERVER_IP:3000
+Domain: https://git.lab
+
+=== BACKREST ===
+URL: http://$SERVER_IP:9898
+Domain: https://backup.lab
+
+=== RESTIC REST ===
+URL: http://$SERVER_IP:8000
+Username: restic
+Password: $(sudo cat /var/lib/rest-server/.restic_pass 2>/dev/null || echo "смотри в /var/lib/rest-server/.restic_pass")
+
+=== TORRSERVER ===
+URL: http://$SERVER_IP:8090
+Domain: https://torrent.lab
+
+=== HOMEPAGE ===
+URL: http://$SERVER_IP:3001
+Domain: https://home.lab
+
+=== NETBIRD ===
+VPN IP: $(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 || echo "не определен")
+Dashboard: https://app.netbird.io
+
+=== QUADLET ФАЙЛЫ ===
+Rootless: ~/.config/containers/systemd/
+Rootful: /etc/containers/systemd/
+Автообновление: podman-auto-update.timer (включено)
+EOF
+
+chmod 600 "$INFRA_DIR/credentials.txt"
+print_success "Все credentials сохранены в ~/infra/credentials.txt"
 
 # =============== 19. САМОУДАЛЕНИЕ ===============
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
