@@ -6,7 +6,7 @@ set -uo pipefail
 # Полноценная домашняя инфраструктура на Ubuntu Server 24.04
 # Использует Quadlet для управления контейнерами через systemd
 #
-# ✅ Passbolt — менеджер паролей для людей
+# ✅ Passbolt + MariaDB — менеджер паролей для людей
 # ✅ Faucet — MCP-сервер + GUI для API-ключей (AI-агенты)
 # ✅ Backrest — управление бэкапами
 # ✅ Restic REST — хранилище бэкапов
@@ -104,6 +104,7 @@ BACKUP_DIR="$INFRA_DIR/backups"
 CERT_DIR="$INFRA_DIR/certs"
 FAUCET_DIR="$INFRA_DIR/faucet"
 NPM_DIR="$INFRA_DIR/nginx-proxy-manager"
+PASSBOLT_DIR="$INFRA_DIR/passbolt"
 QUADLET_USER_DIR="$CURRENT_HOME/.config/containers/systemd"
 QUADLET_SYSTEM_DIR="/etc/containers/systemd"
 
@@ -113,13 +114,13 @@ USER_DIRS=(
     "$VOLUMES_DIR/gitea" "$VOLUMES_DIR/torrserver" "$VOLUMES_DIR/homepage/config"
     "$FAUCET_DIR"/{data,config}
     "$NPM_DIR"/{data,letsencrypt}
+    "$PASSBOLT_DIR"/{gpg,jwt,mariadb,database}
     "$QUADLET_USER_DIR"
 )
 
 SYSTEM_DIRS=(
     "$QUADLET_SYSTEM_DIR"
     "/var/lib/gitea-runner" "/var/lib/netbird" "/var/lib/rest-server"
-    "/var/lib/passbolt/database" "/var/lib/passbolt/gpg" "/var/lib/passbolt/jwt"
     "/var/lib/backrest/data" "/var/lib/backrest/config" "/var/lib/backrest/cache"
 )
 
@@ -224,7 +225,7 @@ EOFAIL
         systemctl enable fail2ban >/dev/null 2>&1 || true
     "
 
-    # Настройка registries.conf для Podman (ВАЖНО ДЛЯ QUADLET)
+    # Настройка registries.conf для Podman
     sudo tee /etc/containers/registries.conf > /dev/null <<EOF
 unqualified-search-registries = ["docker.io", "quay.io", "registry.fedoraproject.org"]
 
@@ -244,8 +245,6 @@ EOF
             sudo ln -sf /usr/libexec/podman/quadlet /usr/lib/systemd/system-generators/podman-system-generator
         fi
         print_success "Quadlet настроен"
-    else
-        print_warning "Quadlet не найден, но podman-docker должен его установить"
     fi
 
     sudo systemctl enable --now podman.socket >/dev/null 2>&1 || true
@@ -363,12 +362,13 @@ status_cmd() {
         [faucet]="root:https://keys.lab"
         [rest-server]="root:http://$SERVER_IP:8000"
         [passbolt]="root:https://passbolt.lab"
+        [passbolt-db]="root:"
         [backrest]="root:https://backup.lab"
     )
 
     declare -A sections=(
         ["Rootless Services"]="gitea torrserver homepage"
-        ["Rootful Services"]="gitea-runner netbird nginx-proxy-manager faucet"
+        ["Rootful Services"]="gitea-runner netbird nginx-proxy-manager faucet passbolt-db"
         ["Backup & Security"]="rest-server passbolt backrest"
     )
 
@@ -431,15 +431,15 @@ clear_cmd() {
 
     echo -e "  ${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
     systemctl --user stop gitea torrserver homepage 2>/dev/null
-    sudo systemctl stop gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager faucet 2>/dev/null
+    sudo systemctl stop gitea-runner netbird rest-server passbolt passbolt-db backrest nginx-proxy-manager faucet 2>/dev/null
 
     echo -e "  ${NEON_YELLOW}▸ Удаление контейнеров...${RESET}"
     podman rm -f systemd-gitea systemd-torrserver systemd-homepage 2>/dev/null
-    sudo podman rm -f gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager faucet 2>/dev/null
+    sudo podman rm -f gitea-runner netbird rest-server passbolt passbolt-db backrest nginx-proxy-manager faucet 2>/dev/null
 
     echo -e "  ${NEON_YELLOW}▸ Удаление Quadlet файлов...${RESET}"
     rm -f ~/.config/containers/systemd/{gitea,torrserver,homepage}.container
-    sudo rm -f /etc/containers/systemd/{gitea-runner,netbird,rest-server,passbolt,backrest,nginx-proxy-manager,faucet}.container
+    sudo rm -f /etc/containers/systemd/{gitea-runner,netbird,rest-server,passbolt,passbolt-db,backrest,nginx-proxy-manager,faucet}.container
 
     systemctl --user daemon-reload
     sudo systemctl daemon-reload
@@ -447,7 +447,7 @@ clear_cmd() {
     read -rp "  Удалить все данные? [y/N]: " DEL_DATA
     if [[ "$DEL_DATA" =~ ^[Yy]$ ]]; then
         echo -e "  ${NEON_YELLOW}▸ Удаление данных...${RESET}"
-        sudo rm -rf "$HOME/infra" /var/lib/gitea-runner /var/lib/netbird /var/lib/rest-server /var/lib/passbolt /var/lib/backrest
+        sudo rm -rf "$HOME/infra" /var/lib/gitea-runner /var/lib/netbird /var/lib/rest-server /var/lib/backrest
     fi
 
     sudo rm -f /usr/local/bin/infra
@@ -461,7 +461,7 @@ case "${1:-status}" in
     status) status_cmd ;;
     logs) 
         case "$2" in
-            netbird|gitea-runner|rest-server|passbolt|backrest|nginx-proxy-manager|faucet) sudo journalctl -u "$2" -f ;;
+            netbird|gitea-runner|rest-server|passbolt|passbolt-db|backrest|nginx-proxy-manager|faucet) sudo journalctl -u "$2" -f ;;
             gitea|torrserver|homepage) journalctl --user -u "$2" -f ;;
             *) echo "Usage: infra logs <service>"; exit 1 ;;
         esac
@@ -469,19 +469,21 @@ case "${1:-status}" in
     stop)
         echo -e "${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
         systemctl --user stop gitea torrserver homepage 2>/dev/null
-        sudo systemctl stop gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager faucet 2>/dev/null
+        sudo systemctl stop gitea-runner netbird rest-server passbolt passbolt-db backrest nginx-proxy-manager faucet 2>/dev/null
         echo -e "  ${ICON_OK} Services stopped"
         ;;
     start)
         echo -e "${NEON_GREEN}▸ Запуск сервисов...${RESET}"
+        sudo systemctl start passbolt-db
+        sleep 5
+        sudo systemctl start passbolt gitea-runner netbird rest-server backrest nginx-proxy-manager faucet 2>/dev/null
         systemctl --user start gitea torrserver homepage 2>/dev/null
-        sudo systemctl start gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager faucet 2>/dev/null
         echo -e "  ${ICON_OK} Services started"
         ;;
     restart)
         echo -e "${NEON_CYAN}▸ Перезапуск $2...${RESET}"
         case "$2" in
-            netbird|gitea-runner|rest-server|passbolt|backrest|nginx-proxy-manager|faucet) sudo systemctl restart "$2" ;;
+            netbird|gitea-runner|rest-server|passbolt|passbolt-db|backrest|nginx-proxy-manager|faucet) sudo systemctl restart "$2" ;;
             gitea|torrserver|homepage) systemctl --user restart "$2" ;;
             *) echo "Unknown service: $2"; exit 1 ;;
         esac
@@ -636,7 +638,7 @@ After=network-online.target
 Wants=podman-auto-update.service
 
 [Container]
-Image=docker.io/netbirdio/netbird:latest
+Image=docker.io/netbirdio/netbird:0.66.0
 ContainerName=netbird
 Network=host
 AddDevice=/dev/net/tun
@@ -702,117 +704,7 @@ sudo systemctl start rest-server.service
 print_success "Restic REST сервер запущен"
 print_url "http://$SERVER_IP:8000"
 
-# =============== 13. PASSBOLT (rootful QUADLET) ===============
-print_step "Настройка Passbolt"
-
-# Генерация GPG ключей
-mkdir -p /tmp/passbolt-gpg
-chmod 700 /tmp/passbolt-gpg
-
-cat > /tmp/gpg-batch <<EOF
-%no-protection
-Key-Type: RSA
-Key-Length: 4096
-Name-Real: Passbolt
-Name-Email: passbolt@devops.lab
-Expire-Date: 0
-%commit
-EOF
-
-gpg --homedir /tmp/passbolt-gpg --batch --gen-key /tmp/gpg-batch
-
-# Экспорт ключей
-gpg --homedir /tmp/passbolt-gpg --export --armor passbolt@devops.lab | sudo tee /var/lib/passbolt/gpg/public.key > /dev/null
-gpg --homedir /tmp/passbolt-gpg --export-secret-key --armor passbolt@devops.lab | sudo tee /var/lib/passbolt/gpg/private.key > /dev/null
-
-# Получение fingerprint
-FINGERPRINT=$(gpg --homedir /tmp/passbolt-gpg --list-keys --with-colons | grep '^fpr:' | head -1 | cut -d: -f10)
-
-# Права на ключи
-sudo chmod 644 /var/lib/passbolt/gpg/public.key
-sudo chmod 600 /var/lib/passbolt/gpg/private.key
-sudo chown -R $CURRENT_USER:$CURRENT_USER /var/lib/passbolt/gpg
-
-# JWT ключ
-openssl rand -base64 32 | sudo tee /var/lib/passbolt/jwt/jwt.key > /dev/null
-sudo chmod 600 /var/lib/passbolt/jwt/jwt.key
-sudo chown $CURRENT_USER:$CURRENT_USER /var/lib/passbolt/jwt/jwt.key
-
-# Пароль БД
-PASSBOLT_DB_PASS=$(openssl rand -base64 24 | tr -d "=+/" | cut -c1-20)
-echo "$PASSBOLT_DB_PASS" | sudo tee /var/lib/passbolt/db_password.txt > /dev/null
-sudo chmod 600 /var/lib/passbolt/db_password.txt
-
-# Конфиг Passbolt
-sudo tee /var/lib/passbolt/config.php > /dev/null <<EOF
-<?php
-return [
-    'App' => [
-        'fullBaseUrl' => 'https://passbolt.lab',
-        'registration' => ['public' => false]
-    ],
-    'Database' => [
-        'host' => 'localhost',
-        'port' => '3306',
-        'username' => 'passbolt',
-        'password' => '$PASSBOLT_DB_PASS',
-        'database' => 'passbolt'
-    ],
-    'passbolt' => [
-        'gpg' => [
-            'serverKey' => [
-                'fingerprint' => '$FINGERPRINT',
-                'public' => '/etc/passbolt/gpg/public.key',
-                'private' => '/etc/passbolt/gpg/private.key'
-            ]
-        ],
-        'jwt' => [
-            'key' => file_get_contents('/etc/passbolt/jwt/jwt.key')
-        ]
-    ]
-];
-EOF
-
-sudo chmod 644 /var/lib/passbolt/config.php
-sudo chown $CURRENT_USER:$CURRENT_USER /var/lib/passbolt/config.php
-
-# Quadlet файл
-sudo tee "$QUADLET_SYSTEM_DIR/passbolt.container" > /dev/null <<EOF
-[Unit]
-Description=Passbolt Password Manager
-After=network-online.target
-Wants=podman-auto-update.service
-
-[Container]
-Image=docker.io/passbolt/passbolt:latest
-ContainerName=passbolt
-Volume=/var/lib/passbolt/database:/var/lib/mysql:Z
-Volume=/var/lib/passbolt/gpg:/etc/passbolt/gpg:Z
-Volume=/var/lib/passbolt/jwt:/etc/passbolt/jwt:Z
-Volume=/var/lib/passbolt/config.php:/etc/passbolt/passbolt.php:Z
-PublishPort=8080:80
-
-[Service]
-Restart=always
-Type=notify
-NotifyAccess=all
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo chmod 644 "$QUADLET_SYSTEM_DIR/passbolt.container"
-sudo systemctl daemon-reload
-sudo systemctl start passbolt.service
-
-# Очистка
-rm -rf /tmp/passbolt-gpg /tmp/gpg-batch
-
-print_success "Passbolt запущен"
-print_url "http://$SERVER_IP:8080"
-print_info "Пароль БД: $PASSBOLT_DB_PASS"
-
-# =============== 14. BACKREST (rootful QUADLET) ===============
+# =============== 13. BACKREST (rootful QUADLET) ===============
 print_step "Настройка Backrest"
 
 sudo chown -R 1000:1000 /var/lib/backrest 2>/dev/null || true
@@ -860,7 +752,7 @@ sudo systemctl start backrest.service
 print_success "Backrest запущен"
 print_url "http://$SERVER_IP:9898"
 
-# =============== 15. FAUCET (rootful QUADLET) ===============
+# =============== 14. FAUCET (rootful QUADLET) ===============
 print_step "Настройка Faucet (MCP Server + GUI)"
 
 FAUCET_PASS=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
@@ -922,7 +814,7 @@ print_success "Faucet запущен"
 print_url "http://$SERVER_IP:8082"
 print_info "Логин: admin / Пароль: $FAUCET_PASS"
 
-# =============== 16. NGINX PROXY MANAGER (rootful QUADLET) ===============
+# =============== 15. NGINX PROXY MANAGER (rootful QUADLET) ===============
 print_step "Настройка Nginx Proxy Manager"
 
 sudo tee "$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container" > /dev/null <<EOF
@@ -956,6 +848,165 @@ sudo systemctl start nginx-proxy-manager.service
 print_success "Nginx Proxy Manager запущен"
 print_url "http://$SERVER_IP:81"
 print_info "Логин: admin@example.com / Пароль: changeme"
+
+# =============== 16. PASSBOLT + MARIADB (rootful QUADLET) ===============
+print_step "Настройка Passbolt с MariaDB"
+
+# Генерация пароля для БД
+PASSBOLT_DB_PASS=$(openssl rand -base64 24 | tr -d "=+/" | cut -c1-24)
+echo "$PASSBOLT_DB_PASS" | sudo tee "$PASSBOLT_DIR/db_password.txt" > /dev/null
+sudo chmod 600 "$PASSBOLT_DIR/db_password.txt"
+
+# Создание сети для Passbolt (используем существующую podman)
+sudo podman network create passbolt-net 2>/dev/null || true
+
+# MariaDB Quadlet файл
+sudo tee "$QUADLET_SYSTEM_DIR/passbolt-db.container" > /dev/null <<EOF
+[Unit]
+Description=Passbolt MariaDB Database
+After=network-online.target
+Wants=podman-auto-update.service
+
+[Container]
+Image=docker.io/mariadb:10.11
+ContainerName=passbolt-db
+Network=podman
+Volume=$PASSBOLT_DIR/mariadb:/var/lib/mysql:Z
+Environment=MARIADB_USER=passbolt
+Environment=MARIADB_PASSWORD=$PASSBOLT_DB_PASS
+Environment=MARIADB_DATABASE=passbolt
+Environment=MARIADB_RANDOM_ROOT_PASSWORD=1
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/passbolt-db.container"
+
+# Генерация GPG ключей для Passbolt
+print_info "Генерация GPG ключей для Passbolt..."
+sudo mkdir -p "$PASSBOLT_DIR/gpg"
+sudo chmod 700 "$PASSBOLT_DIR/gpg"
+
+# Создаем временную директорию для генерации ключей
+TMP_GPG_DIR=$(mktemp -d)
+chmod 700 "$TMP_GPG_DIR"
+
+cat > "$TMP_GPG_DIR/gpg-batch" <<EOF
+%no-protection
+Key-Type: RSA
+Key-Length: 4096
+Name-Real: Passbolt
+Name-Email: passbolt@devops.lab
+Expire-Date: 0
+%commit
+EOF
+
+gpg --homedir "$TMP_GPG_DIR" --batch --gen-key "$TMP_GPG_DIR/gpg-batch"
+
+# Экспорт ключей
+gpg --homedir "$TMP_GPG_DIR" --export --armor passbolt@devops.lab | sudo tee "$PASSBOLT_DIR/gpg/serverkey_public.asc" > /dev/null
+gpg --homedir "$TMP_GPG_DIR" --export-secret-key --armor passbolt@devops.lab | sudo tee "$PASSBOLT_DIR/gpg/serverkey_private.asc" > /dev/null
+
+# Получение fingerprint
+FINGERPRINT=$(gpg --homedir "$TMP_GPG_DIR" --list-keys --with-colons | grep '^fpr:' | head -1 | cut -d: -f10)
+rm -rf "$TMP_GPG_DIR"
+
+# Права на ключи
+sudo chmod 644 "$PASSBOLT_DIR/gpg/serverkey_public.asc"
+sudo chmod 600 "$PASSBOLT_DIR/gpg/serverkey_private.asc"
+sudo chown -R $CURRENT_USER:$CURRENT_USER "$PASSBOLT_DIR/gpg"
+
+# Генерация JWT ключа
+sudo mkdir -p "$PASSBOLT_DIR/jwt"
+openssl rand -base64 32 | sudo tee "$PASSBOLT_DIR/jwt/jwt.key" > /dev/null
+sudo chmod 640 "$PASSBOLT_DIR/jwt/jwt.key"
+sudo chown -R $CURRENT_USER:$CURRENT_USER "$PASSBOLT_DIR/jwt"
+
+# Создание конфига Passbolt
+sudo tee "$PASSBOLT_DIR/config.php" > /dev/null <<EOF
+<?php
+return [
+    'App' => [
+        'fullBaseUrl' => 'https://passbolt.lab',
+        'registration' => ['public' => false]
+    ],
+    'Database' => [
+        'host' => 'passbolt-db',
+        'port' => 3306,
+        'username' => 'passbolt',
+        'password' => '$PASSBOLT_DB_PASS',
+        'database' => 'passbolt',
+        'driver' => 'Cake\Database\Driver\Mysql'
+    ],
+    'passbolt' => [
+        'gpg' => [
+            'serverKey' => [
+                'fingerprint' => '$FINGERPRINT',
+                'public' => '/etc/passbolt/gpg/serverkey_public.asc',
+                'private' => '/etc/passbolt/gpg/serverkey_private.asc'
+            ]
+        ],
+        'jwt' => [
+            'key' => file_get_contents('/etc/passbolt/jwt/jwt.key')
+        ]
+    ]
+];
+EOF
+
+sudo chmod 644 "$PASSBOLT_DIR/config.php"
+sudo chown $CURRENT_USER:$CURRENT_USER "$PASSBOLT_DIR/config.php"
+
+# Passbolt Quadlet файл
+sudo tee "$QUADLET_SYSTEM_DIR/passbolt.container" > /dev/null <<EOF
+[Unit]
+Description=Passbolt Password Manager
+After=network-online.target passbolt-db.service
+Wants=podman-auto-update.service
+Requires=passbolt-db.service
+
+[Container]
+Image=docker.io/passbolt/passbolt:latest
+ContainerName=passbolt
+Network=podman
+PublishPort=8080:80
+Volume=$PASSBOLT_DIR/gpg:/etc/passbolt/gpg:Z
+Volume=$PASSBOLT_DIR/jwt:/etc/passbolt/jwt:Z
+Volume=$PASSBOLT_DIR/config.php:/etc/passbolt/passbolt.php:Z
+Environment=DATASOURCES_DEFAULT_HOST=passbolt-db
+Environment=DATASOURCES_DEFAULT_USERNAME=passbolt
+Environment=DATASOURCES_DEFAULT_PASSWORD=$PASSBOLT_DB_PASS
+Environment=DATASOURCES_DEFAULT_DATABASE=passbolt
+Environment=APP_FULL_BASE_URL=http://$SERVER_IP:8080
+
+[Service]
+Restart=always
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/passbolt.container"
+
+# Запуск MariaDB и Passbolt
+sudo systemctl daemon-reload
+sudo systemctl start passbolt-db.service
+print_info "Ожидание инициализации MariaDB (20 секунд)..."
+sleep 20
+sudo systemctl start passbolt.service
+
+print_success "Passbolt с MariaDB запущен"
+print_url "http://$SERVER_IP:8080"
+print_info "Пароль БД: $PASSBOLT_DB_PASS"
+print_info "Для инициализации Passbolt выполните:"
+print_info "sudo podman exec -it passbolt bash -c \"su -s /bin/bash www-data -c './bin/cake passbolt install --username=admin@passbolt.lab --first-name=Admin --last-name=User'\""
 
 # =============== 17. HOMEPAGE (rootless QUADLET) ===============
 print_step "Настройка Homepage"
@@ -1104,7 +1155,7 @@ print_header "🚀 ИНФРАСТРУКТУРА ПОЛНОСТЬЮ ГОТОВА"
 cat <<EOF
 
 ${NEON_GREEN}╔══════════════════════════════════════════════════════════╗${RESET}
-${NEON_GREEN}║          ДОСТУП ДЛЯ ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ             ║${RESET}
+${NEON_GREEN}║         🔌 ДОСТУП ДЛЯ ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ         ║${RESET}
 ${NEON_GREEN}╚══════════════════════════════════════════════════════════╝${RESET}
 
 ${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
@@ -1114,6 +1165,7 @@ ${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
 ${NEON_CYAN}🔐 МЕНЕДЖЕРЫ СЕКРЕТОВ${RESET}
   ${NEON_GREEN}●${RESET} Passbolt:            ${NEON_CYAN}http://$SERVER_IP:8080${RESET}
   ${MUTED_GRAY}  └─ Пароль БД: ${NEON_CYAN}$PASSBOLT_DB_PASS${RESET}
+  ${MUTED_GRAY}  └─ Инициализация: sudo podman exec -it passbolt bash -c "su -s /bin/bash www-data -c './bin/cake passbolt install --username=admin@passbolt.lab --first-name=Admin --last-name=User'"
   ${NEON_GREEN}●${RESET} Faucet:              ${NEON_CYAN}http://$SERVER_IP:8082${RESET}
   ${MUTED_GRAY}  └─ Логин: admin / Пароль: ${NEON_CYAN}$FAUCET_PASS${RESET}
 
@@ -1131,10 +1183,10 @@ ${NEON_CYAN}🪟 WINDOWS КЛИЕНТЫ${RESET}
   ${NEON_GREEN}●${RESET} Restic:      ${NEON_CYAN}https://github.com/restic/restic/releases${RESET}
 
 ${NEON_BLUE}📋 СЛЕДУЮЩИЕ ШАГИ${RESET}
-  ${NEON_YELLOW}1.${RESET} Зайди в Nginx Proxy Manager (http://$SERVER_IP:81)
-  ${NEON_YELLOW}2.${RESET} Добавь proxy hosts для всех доменов (passbolt.lab, git.lab, keys.lab и т.д.)
-  ${NEON_YELLOW}3.${RESET} Включи SSL (сертификаты уже созданы в $CERT_DIR)
-  ${NEON_YELLOW}4.${RESET} Настрой Passbolt и Faucet через их веб-интерфейсы
+  ${NEON_YELLOW}1.${RESET} Зайди в Nginx Proxy Manager (http://$SERVER_IP:81) и настрой прокси для доменов
+  ${NEON_YELLOW}2.${RESET} Инициализируй Passbolt командой из вывода выше
+  ${NEON_YELLOW}3.${RESET} Добавь записи в hosts файл на компьютере: $SERVER_IP passbolt.lab git.lab backup.lab home.lab torrent.lab keys.lab
+  ${NEON_YELLOW}4.${RESET} Настрой Faucet через веб-интерфейс (добавь API ключи)
 
 ${NEON_GREEN}🎉 УПРАВЛЕНИЕ: ${NEON_CYAN}infra status${RESET}
 ${NEON_GREEN}📋 ЛОГИ:       ${NEON_CYAN}infra logs <service>${RESET}
