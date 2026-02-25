@@ -3,19 +3,18 @@ set -uo pipefail
 # =============================================================================
 # INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ АБСОЛЮТНАЯ)
 # =============================================================================
-# Совместная работа команды ❤️
-# 
+# Полноценная домашняя инфраструктура на Ubuntu Server 24.04
+#
 # ✅ Passbolt — менеджер паролей для людей
-# ✅ Faucet — MCP-сервер + GUI для API-ключей (AI-агенты)
+# ✅ Faucet — MCP-сервер + GUI для API-ключей
 # ✅ Backrest — управление бэкапами
 # ✅ Restic REST — хранилище бэкапов
 # ✅ Gitea + Runner — Git с CI/CD
 # ✅ TorrServer — торрент-стриминг
-# ✅ Homepage — красивый дашборд с погодой
+# ✅ Homepage — красивый дашборд
 # ✅ Nginx Proxy Manager — reverse proxy с GUI
 # ✅ NetBird VPN — доступ из любой точки
 # ✅ mkcert — локальный HTTPS
-# ✅ LVM шифрование — защита диска
 # =============================================================================
 
 # =============== 1. ЦВЕТА ===============
@@ -46,15 +45,26 @@ CURRENT_HOME="$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
 # =============== 2. ФУНКЦИИ ===============
-print_header() { echo ""; echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"; echo -e "${NEON_CYAN}${BOLD}  $1${RESET}"; echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"; echo ""; }
-print_step() { echo ""; echo -e "${NEON_CYAN}${BOLD}▸${RESET} ${SOFT_WHITE}${BOLD}$1${RESET}"; echo -e "${DIM_GRAY}  $(printf '─%.0s' $(seq 1 40))${RESET}"; }
+print_header() { 
+    echo ""; 
+    echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"; 
+    echo -e "${NEON_CYAN}${BOLD}  $1${RESET}"; 
+    echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"; 
+    echo ""; 
+}
+
+print_step() { 
+    echo ""; 
+    echo -e "${NEON_CYAN}${BOLD}▸${RESET} ${SOFT_WHITE}${BOLD}$1${RESET}"; 
+    echo -e "${DIM_GRAY}  $(printf '─%.0s' $(seq 1 40))${RESET}"; 
+}
+
 print_success() { echo -e "  ${NEON_GREEN}✓${RESET} ${SOFT_WHITE}$1${RESET}"; }
 print_warning() { echo -e "  ${NEON_YELLOW}⚡${RESET} ${SOFT_WHITE}$1${RESET}"; }
 print_error() { echo -e "  ${NEON_RED}✗${RESET} ${BOLD}$1${RESET}" >&2; }
 print_info() { echo -e "  ${NEON_BLUE}ℹ${RESET} ${MUTED_GRAY}$1${RESET}"; }
 print_url() { echo -e "  ${NEON_CYAN}➜${RESET} ${BOLD}${NEON_CYAN}$1${RESET}"; }
 
-# Универсальная функция для шагов
 step() {
     local msg=$1
     local cmd=$2
@@ -126,7 +136,7 @@ done
 
 print_success "Директории созданы"
 
-# =============== BOOTSTRAP ===============
+# =============== 5. BOOTSTRAP ===============
 print_step "Подготовка системы"
 
 if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
@@ -140,7 +150,11 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq >/dev/null 2>&1
         apt-get upgrade -y -qq >/dev/null 2>&1 || true
-        apt-get install -y -qq uidmap slirp4netns fuse-overlayfs curl openssl ufw fail2ban apache2-utils argon2 jq wget >/dev/null 2>&1 || true
+        
+        # Установка пакетов
+        apt-get install -y -qq uidmap slirp4netns fuse-overlayfs curl wget \
+            openssl ufw fail2ban apache2-utils argon2 jq podman podman-docker \
+            >/dev/null 2>&1 || true
 
         # Swap
         if [ ! -f /swapfile ] && [ \$(free | grep -c Swap) -eq 0 ] || [ \$(free | awk '/^Swap:/ {print \$2}') -eq 0 ]; then
@@ -165,27 +179,28 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
             usermod --add-subuids 100000-165535 --add-subgids 100000-165535 '$CURRENT_USER' 2>/dev/null || true
         fi
 
-        # UFW (АБСОЛЮТНО ТИХАЯ ВЕРСИЯ)
+        # UFW
         sed -i 's/DEFAULT_FORWARD_POLICY=\"DROP\"/DEFAULT_FORWARD_POLICY=\"ACCEPT\"/' /etc/default/ufw 2>/dev/null
         ufw --force reset >/dev/null 2>&1
         ufw default deny incoming >/dev/null 2>&1
         ufw default allow outgoing >/dev/null 2>&1
         ufw default allow routed >/dev/null 2>&1
         
-        ufw allow 22/tcp >/dev/null 2>&1
-        ufw allow 3000/tcp >/dev/null 2>&1
-        ufw allow 3001/tcp >/dev/null 2>&1
-        ufw allow 2222/tcp >/dev/null 2>&1
-        ufw allow 8090/tcp >/dev/null 2>&1
-        ufw allow 8080/tcp >/dev/null 2>&1
-        ufw allow 9898/tcp >/dev/null 2>&1
-        ufw allow 8000/tcp >/dev/null 2>&1
-        ufw allow 81/tcp >/dev/null 2>&1
-        ufw allow 80/tcp >/dev/null 2>&1
-        ufw allow 443/tcp >/dev/null 2>&1
-        ufw allow 51820/udp >/dev/null 2>&1
-        ufw allow 8082/tcp >/dev/null 2>&1
-        ufw allow 8083/tcp >/dev/null 2>&1
+        # Открываем порты
+        ufw allow 22/tcp >/dev/null 2>&1      # SSH
+        ufw allow 80/tcp >/dev/null 2>&1      # HTTP
+        ufw allow 443/tcp >/dev/null 2>&1     # HTTPS
+        ufw allow 81/tcp >/dev/null 2>&1      # NPM Admin
+        ufw allow 3000/tcp >/dev/null 2>&1    # Gitea
+        ufw allow 2222/tcp >/dev/null 2>&1    # Gitea SSH
+        ufw allow 3001/tcp >/dev/null 2>&1    # Homepage
+        ufw allow 8090/tcp >/dev/null 2>&1    # TorrServer
+        ufw allow 8080/tcp >/dev/null 2>&1    # Passbolt
+        ufw allow 8082/tcp >/dev/null 2>&1    # Faucet GUI
+        ufw allow 8083/tcp >/dev/null 2>&1    # Faucet MCP
+        ufw allow 9898/tcp >/dev/null 2>&1    # Backrest
+        ufw allow 8000/tcp >/dev/null 2>&1    # Restic REST
+        ufw allow 51820/udp >/dev/null 2>&1   # NetBird
         
         ufw --force enable >/dev/null 2>&1
 
@@ -205,9 +220,31 @@ maxretry = 3
 EOFAIL
         systemctl restart fail2ban >/dev/null 2>&1 || true
         systemctl enable fail2ban >/dev/null 2>&1 || true
+        
+        # SSH hardening (если есть ключи)
+        if [ -d '$CURRENT_HOME/.ssh' ] && [ -n \"\$(ls -A $CURRENT_HOME/.ssh/*.pub 2>/dev/null)\" ]; then
+            sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+            sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+            systemctl restart sshd >/dev/null 2>&1 || true
+        fi
     "
 
+    # Настройка Quadlet
+    if [ -f "/usr/libexec/podman/quadlet" ]; then
+        if [ ! -L "/usr/lib/systemd/system-generators/podman-system-generator" ]; then
+            sudo ln -sf /usr/libexec/podman/quadlet /usr/lib/systemd/system-generators/podman-system-generator
+        fi
+    fi
+    
+    sudo systemctl enable --now podman.socket >/dev/null 2>&1 || true
     sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || true
+    
+    # Включаем автообновление
+    systemctl --user enable podman-auto-update.timer 2>/dev/null || true
+    systemctl --user start podman-auto-update.timer 2>/dev/null || true
+    sudo systemctl enable podman-auto-update.timer 2>/dev/null || true
+    sudo systemctl start podman-auto-update.timer 2>/dev/null || true
+
     touch "$INFRA_DIR/.bootstrap_done"
     print_success "Система настроена"
 else
@@ -291,7 +328,7 @@ format_status() {
 
 check_url() {
     local url=$1
-    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$url" 2>/dev/null | grep -q "200\|302\|401"; then
+    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$url" 2>/dev/null | grep -q "200\|302\|401\|403"; then
         echo -e "${NEON_GREEN}✓${RESET}"
     else
         echo -e "${NEON_RED}✗${RESET}"
@@ -304,18 +341,14 @@ status_cmd() {
     echo -e "${NEON_CYAN}║${RESET} ${BOLD}${SOFT_WHITE}INFRA STATUS v12.0.0${RESET}                           ${NEON_CYAN}║${RESET}"
     echo -e "${NEON_CYAN}╚══════════════════════════════════════════════════════════╝${RESET}"
 
-    # Данные о сервисах
     declare -A services=(
-        # rootless
         [gitea]="user:https://git.lab"
         [torrserver]="user:https://torrent.lab"
         [homepage]="user:https://home.lab"
-        # rootful
         [gitea-runner]="root:"
         [netbird]="root:"
         [nginx-proxy-manager]="root:http://$SERVER_IP:81"
         [faucet]="root:https://keys.lab"
-        # backup & security
         [rest-server]="root:http://$SERVER_IP:8000"
         [passbolt]="root:https://passbolt.lab"
         [backrest]="root:https://backup.lab"
@@ -342,7 +375,7 @@ status_cmd() {
         done
     done
 
-    # NetBird IP (если есть)
+    # NetBird IP
     if sudo podman ps | grep -q netbird; then
         NB_IP=$(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
         if [ -n "$NB_IP" ]; then
@@ -361,7 +394,22 @@ status_cmd() {
 
     echo -e "\n${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
     echo -e "  ${ICON_OK} running  ${ICON_FAIL} stopped  ${NEON_CYAN}↗${RESET} URL ${NEON_GREEN}✓${RESET} доступен ${NEON_RED}✗${RESET} недоступен"
-    echo -e "  ${MUTED_GRAY}Commands: ${NEON_CYAN}status${RESET}|${NEON_CYAN}start${RESET}|${NEON_CYAN}stop${RESET}|${NEON_CYAN}restart${RESET}|${NEON_CYAN}logs${RESET}|${NEON_CYAN}clear${RESET}"
+    echo -e "  ${MUTED_GRAY}Commands: ${NEON_CYAN}status${RESET}|${NEON_CYAN}start${RESET}|${NEON_CYAN}stop${RESET}|${NEON_CYAN}restart${RESET}|${NEON_CYAN}logs${RESET}|${NEON_CYAN}backup${RESET}|${NEON_CYAN}clear${RESET}"
+}
+
+backup_cmd() {
+    BACKUP_DIR="$INFRA_DIR/backups/snapshots"
+    mkdir -p "$BACKUP_DIR"
+    backup_time=$(date +%Y%m%d-%H%M%S)
+    SNAPSHOT="$BACKUP_DIR/infra-$backup_time.tar.gz"
+    echo -e "${NEON_CYAN}▸ Создание бэкапа...${RESET}"
+    if podman run --rm -v "$INFRA_DIR/volumes:/data:ro" -v "$BACKUP_DIR:/backup:Z" docker.io/library/alpine:latest tar -czf "/backup/$(basename $SNAPSHOT)" -C /data . 2>/dev/null; then
+        sudo chown $USER:$USER "$SNAPSHOT" 2>/dev/null
+        size=$(du -h "$SNAPSHOT" 2>/dev/null | cut -f1)
+        echo -e "  ${ICON_OK} Бэкап создан: $(basename $SNAPSHOT) ($size)"
+    else
+        echo -e "  ${ICON_WARN} Ошибка создания бэкапа"
+    fi
 }
 
 clear_cmd() {
@@ -427,8 +475,9 @@ case "${1:-status}" in
         esac
         echo -e "  ${ICON_OK} $2 restarted"
         ;;
+    backup) backup_cmd ;;
     clear) clear_cmd ;;
-    *) echo "Использование: infra {status|start|stop|restart|logs|clear}" ;;
+    *) echo "Использование: infra {status|start|stop|restart|logs|backup|clear}" ;;
 esac
 ENDOFCLI
 
@@ -469,8 +518,7 @@ step "Запуск TorrServer" "
 "
 
 print_success "TorrServer запущен"
-print_info "Для настройки: http://$SERVER_IP:8090"
-print_info "После настройки NPM: https://torrent.lab"
+print_url "http://$SERVER_IP:8090"
 
 # =============== 9. GITEA ===============
 print_step "Создание Gitea"
@@ -512,7 +560,7 @@ step "Запуск Gitea" "
 "
 
 print_success "Gitea запущена"
-print_info "Для настройки: http://$SERVER_IP:3000"
+print_url "http://$SERVER_IP:3000"
 print_info "После настройки NPM: https://git.lab"
 
 # =============== 10. GITEA RUNNER ===============
@@ -546,8 +594,6 @@ if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1
     done
     
     if [ -n "$RUNNER_TOKEN" ]; then
-        step "Создание директории" "sudo mkdir -p /var/lib/gitea-runner && sudo chmod 755 /var/lib/gitea-runner"
-        
         step "Создание Quadlet файла runner" "
             sudo tee \"$QUADLET_SYSTEM_DIR/gitea-runner.container\" > /dev/null <<EOF
 [Unit]
@@ -591,16 +637,21 @@ EOF
         fi
     fi
 else
-    print_warning "Gitea API не доступен. Runner можно настроить позже командой:"
-    print_info "  sudo ./setup-runner.sh"
+    print_warning "Gitea API не доступен. Runner можно настроить позже:"
+    print_info "  sudo ./setup-runner.sh (или через CLI: infra setup-runner)"
 fi
 
 # =============== 11. NETBIRD ===============
 print_step "Настройка NetBird"
-read -rp "  NetBird Setup Key (Enter - пропустить): " NB_KEY
+echo ""
+print_info "🌐 Для подключения к VPN нужен Setup Key"
+print_info "1. Зарегистрируйся на https://app.netbird.io/"
+print_info "2. Создай Setup Key в разделе Setup Keys"
+print_info "3. Введи его ниже (или Enter чтобы пропустить)"
+echo ""
+read -rp "  NetBird Setup Key: " NB_KEY
+
 if [ -n "$NB_KEY" ]; then
-    step "Создание директории" "sudo mkdir -p /var/lib/netbird && sudo chmod 755 /var/lib/netbird"
-    
     step "Создание Quadlet файла" "
         sudo tee \"$QUADLET_SYSTEM_DIR/netbird.container\" > /dev/null <<EOF
 [Unit]
@@ -641,7 +692,7 @@ else
     print_info "NetBird пропущен"
 fi
 
-# =============== 12. REST-SERVER ===============
+# =============== 12. RESTIC REST SERVER ===============
 print_step "Настройка Restic REST сервера"
 
 if [ ! -f "/var/lib/rest-server/.htpasswd" ]; then
@@ -688,12 +739,9 @@ print_info "Доступ: http://$SERVER_IP:8000 (user: restic / пароль в
 # =============== 13. PASSBOLT ===============
 print_step "Настройка Passbolt"
 
-step "Создание директорий" "
-    sudo mkdir -p /var/lib/passbolt/{database,gpg,jwt}
-    sudo chmod 755 /var/lib/passbolt/{database,gpg,jwt}
-"
+PASSBOLT_DB_PASS=$(openssl rand -base64 24)
 
-step "Генерация GPG ключей" "
+step "Создание GPG ключей" "
     sudo podman run --rm -v /var/lib/passbolt/gpg:/etc/passbolt/gpg:Z docker.io/passbolt/passbolt:latest \
         /bin/bash -c \"gpg --batch --gen-key <<EOF
             %no-protection
@@ -711,7 +759,6 @@ step "Генерация JWT ключа" "
 "
 
 GPG_FINGERPRINT=$(sudo gpg --homedir /var/lib/passbolt/gpg --fingerprint 2>/dev/null | grep -oE '[0-9A-F]{40}' | head -1)
-PASSBOLT_DB_PASS=$(openssl rand -base64 24)
 
 step "Создание конфигурации" "
     sudo tee /var/lib/passbolt/config.php > /dev/null <<EOF
@@ -761,17 +808,13 @@ step "Запуск Passbolt" "
 "
 
 print_success "Passbolt запущен"
-print_info "Для настройки: http://$SERVER_IP:8080"
-print_info "После настройки NPM: https://passbolt.lab"
+print_url "http://$SERVER_IP:8080"
 print_info "Пароль БД: $PASSBOLT_DB_PASS (сохрани!)"
 
 # =============== 14. BACKREST ===============
 print_step "Настройка Backrest"
 
-step "Создание директорий" "
-    sudo mkdir -p /var/lib/backrest/{data,config,cache}
-    sudo chown -R 1000:1000 /var/lib/backrest 2>/dev/null
-"
+step "Настройка прав" "sudo chown -R 1000:1000 /var/lib/backrest 2>/dev/null"
 
 if [ -f "/var/lib/rest-server/.restic_pass" ]; then
     RESTIC_PASS=$(sudo cat /var/lib/rest-server/.restic_pass)
@@ -821,19 +864,13 @@ step "Запуск Backrest" "
 "
 
 print_success "Backrest запущен"
-print_info "Для настройки: http://$SERVER_IP:9898"
-print_info "После настройки NPM: https://backup.lab"
+print_url "http://$SERVER_IP:9898"
 
-# =============== 15. FAUCET (MCP SERVER) ===============
-print_step "Настройка Faucet"
-
-step "Скачивание бинарника" "
-    wget -qO /tmp/faucet https://github.com/faucetdb/faucet/releases/latest/download/faucet-linux-amd64
-    chmod +x /tmp/faucet
-    sudo mv /tmp/faucet /usr/local/bin/faucet
-"
+# =============== 15. FAUCET ===============
+print_step "Настройка Faucet (MCP Server + GUI)"
 
 FAUCET_PASS=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
+FAUCET_JWT_SECRET=$(openssl rand -base64 32)
 
 step "Создание конфига" "
     cat > \"$FAUCET_DIR/config/faucet.yaml\" <<EOF
@@ -843,7 +880,7 @@ database:
 
 auth:
   enabled: true
-  jwt_secret: $(openssl rand -base64 32)
+  jwt_secret: $FAUCET_JWT_SECRET
   
 admin:
   enabled: true
@@ -851,23 +888,7 @@ admin:
     - username: admin
       password: $FAUCET_PASS
 EOF
-"
-
-step "Создание таблицы ключей" "
-    cat > \"$FAUCET_DIR/config/init.sql\" <<EOF
-CREATE TABLE IF NOT EXISTS api_keys (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    service TEXT UNIQUE NOT NULL,
-    key_value TEXT NOT NULL,
-    notes TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    tags TEXT
-);
-CREATE INDEX idx_api_keys_service ON api_keys(service);
-EOF
-    cd \"$FAUCET_DIR\"
-    faucet db exec \"\$(cat config/init.sql)\" 2>/dev/null || true
+    chmod 600 \"$FAUCET_DIR/config/faucet.yaml\"
 "
 
 step "Создание MCP конфига" "
@@ -901,6 +922,7 @@ step "Создание Quadlet файла" "
 [Unit]
 Description=Faucet MCP Server with GUI
 After=network-online.target
+Wants=podman-auto-update.service
 
 [Container]
 Image=docker.io/faucetdb/faucet:latest
@@ -913,6 +935,8 @@ Environment=FAUCET_CONFIG=/config/faucet.yaml
 
 [Service]
 Restart=always
+Type=notify
+NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -926,13 +950,13 @@ step "Запуск Faucet" "
     sleep 5
 "
 
-# Добавляем тестовый ключ
-faucet db exec "INSERT OR IGNORE INTO api_keys (service, key_value, notes, tags) VALUES ('OPENAI_API_KEY', 'sk-placeholder', 'Replace with your actual key', 'ai,test');" 2>/dev/null || true
+# Инициализация БД и добавление тестового ключа
+sudo podman exec faucet faucet db exec "CREATE TABLE IF NOT EXISTS api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, service TEXT UNIQUE NOT NULL, key_value TEXT NOT NULL, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, tags TEXT);" 2>/dev/null || true
+sudo podman exec faucet faucet db exec "INSERT OR IGNORE INTO api_keys (service, key_value, notes, tags) VALUES ('OPENAI_API_KEY', 'sk-placeholder', 'Replace with your actual key', 'ai,test');" 2>/dev/null || true
 
 print_success "Faucet установлен"
 print_info "Admin UI: http://$SERVER_IP:8082 (логин: admin / пароль: $FAUCET_PASS)"
 print_info "MCP endpoint: http://$SERVER_IP:8083/mcp"
-print_info "После настройки NPM: https://keys.lab"
 
 # =============== 16. NGINX PROXY MANAGER ===============
 print_step "Настройка Nginx Proxy Manager"
@@ -974,7 +998,7 @@ print_info "Admin UI: http://$SERVER_IP:81 (admin@example.com / changeme)"
 print_info "После настройки NPM все сервисы станут доступны по доменам .lab с HTTPS"
 
 # =============== 17. HOMEPAGE ===============
-print_step "Настройка Homepage (красивый дашборд)"
+print_step "Настройка Homepage"
 
 echo ""
 print_info "🌤 Хочешь видеть погоду на дашборде?"
@@ -989,11 +1013,11 @@ mkdir -p "$HOMEPAGE_CONFIG_DIR"
 
 if [ -n "$WEATHER_KEY" ]; then
     WEATHER_CONFIG="
-  - name: \"Погода в Барнауле\"
+  - name: \"Погода в вашем городе\"
     type: \"openweathermap\"
     apiKey: \"$WEATHER_KEY\"
     units: \"metric\"
-    city: \"Barnaul\"
+    city: \"YourCity\"
     country: \"RU\""
 else
     WEATHER_CONFIG=""
@@ -1015,15 +1039,11 @@ search:
   target: _blank
 information:
 $WEATHER_CONFIG
-  - name: \"Системная информация\"
-    type: \"glances\"
-    url: \"http://localhost:61208\"
-    refresh: 5000
 EOF
 
     cat > \"$HOMEPAGE_CONFIG_DIR/services.yaml\" <<EOF
 ---
-Infrastructure:
+Инфраструктура:
   - Passbolt:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/passbolt.png
       href: https://passbolt.lab
@@ -1032,7 +1052,7 @@ Infrastructure:
   - Faucet:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/faucet.png
       href: https://keys.lab
-      description: \"API-ключи для AI (MCP + GUI)\"
+      description: \"API-ключи для AI\"
       container: faucet
   - Backrest:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
@@ -1050,27 +1070,24 @@ Infrastructure:
       description: \"Торрент стриминг\"
       container: systemd-torrserver
 
-Windows Clients:
+Windows Клиенты:
   - NetBird VPN:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
       href: https://pkgs.netbird.io/windows
       description: \"Для доступа из любой точки\"
-      subtitle: \"Без VPN не попадёшь домой\"
   - Bitwarden Desktop:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/bitwarden.png
       href: https://bitwarden.com/download/
       description: \"Клиент для Passbolt\"
-      subtitle: \"Настрой сервер https://passbolt.lab\"
   - Restic:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
       href: https://github.com/restic/restic/releases
       description: \"Бэкапы Windows\"
-      subtitle: \"rest:http://restic:ПАРОЛЬ@keys.lab:8000/windows-backup\"
 
-Administration:
+Администрирование:
   - Nginx Proxy Manager:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/nginx-proxy-manager.png
-      href: http://192.168.1.8:81
+      href: http://$SERVER_IP:81
       description: \"Reverse proxy GUI\"
       container: nginx-proxy-manager
   - NetBird:
@@ -1080,7 +1097,7 @@ Administration:
       container: netbird
   - Restic REST:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
-      href: http://192.168.1.8:8000
+      href: http://$SERVER_IP:8000
       description: \"Хранилище бэкапов\"
       container: rest-server
 EOF
@@ -1123,8 +1140,7 @@ step "Запуск Homepage" "
 "
 
 print_success "Homepage запущен"
-print_info "Для настройки: http://$SERVER_IP:3001"
-print_info "После настройки NPM: https://home.lab"
+print_url "http://$SERVER_IP:3001"
 
 # =============== 18. ФИНАЛЬНЫЙ ВЫВОД ===============
 print_header "🚀 ИНФРАСТРУКТУРА ПОЛНОСТЬЮ ГОТОВА"
@@ -1140,8 +1156,8 @@ ${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
   ${NEON_GREEN}●${RESET} Nginx Proxy Manager: ${NEON_CYAN}http://$SERVER_IP:81${RESET} (admin@example.com / changeme)
 
 ${NEON_CYAN}🔐 МЕНЕДЖЕРЫ СЕКРЕТОВ${RESET}
-  ${NEON_GREEN}●${RESET} Passbolt:            ${NEON_CYAN}http://$SERVER_IP:8080${RESET} (пароли людей)
-  ${NEON_GREEN}●${RESET} Faucet:              ${NEON_CYAN}http://$SERVER_IP:8082${RESET} (API-ключи для AI)
+  ${NEON_GREEN}●${RESET} Passbolt:            ${NEON_CYAN}http://$SERVER_IP:8080${RESET}
+  ${NEON_GREEN}●${RESET} Faucet:              ${NEON_CYAN}http://$SERVER_IP:8082${RESET}
   ${MUTED_GRAY}  └─ Логин: admin / Пароль: ${NEON_CYAN}$FAUCET_PASS${RESET}
 
 ${NEON_CYAN}📦 РАЗРАБОТКА И БЭКАПЫ${RESET}
@@ -1165,6 +1181,7 @@ ${NEON_BLUE}📋 СЛЕДУЮЩИЕ ШАГИ${RESET}
 
 ${NEON_GREEN}🎉 УПРАВЛЕНИЕ: ${NEON_CYAN}infra status${RESET}
 ${NEON_GREEN}📋 ЛОГИ:       ${NEON_CYAN}infra logs <service>${RESET}
+${NEON_GREEN}💾 БЭКАП:      ${NEON_CYAN}infra backup${RESET}
 EOF
 
 # =============== 19. САМОУДАЛЕНИЕ ===============
