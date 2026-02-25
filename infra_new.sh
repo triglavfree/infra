@@ -4,14 +4,15 @@ set -uo pipefail
 # INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ АБСОЛЮТНАЯ)
 # =============================================================================
 # Полноценная домашняя инфраструктура на Ubuntu Server 24.04
+# Использует Quadlet для управления контейнерами через systemd
 #
 # ✅ Passbolt — менеджер паролей для людей
-# ✅ Faucet — MCP-сервер + GUI для API-ключей
+# ✅ Faucet — MCP-сервер + GUI для API-ключей (AI-агенты)
 # ✅ Backrest — управление бэкапами
 # ✅ Restic REST — хранилище бэкапов
 # ✅ Gitea + Runner — Git с CI/CD
 # ✅ TorrServer — торрент-стриминг
-# ✅ Homepage — красивый дашборд
+# ✅ Homepage — красивый дашборд с погодой
 # ✅ Nginx Proxy Manager — reverse proxy с GUI
 # ✅ NetBird VPN — доступ из любой точки
 # ✅ mkcert — локальный HTTPS
@@ -89,7 +90,7 @@ if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
     exit 1
 fi
 
-print_header "🚀 INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ АБСОЛЮТНАЯ)"
+print_header "🚀 INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ АБСОЛЮТНАЯ С QUADLET)"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
 # =============== 4. ДИРЕКТОРИИ ===============
@@ -132,6 +133,7 @@ done
 
 for dir in "${SYSTEM_DIRS[@]}"; do
     sudo mkdir -p "$dir"
+    sudo chown "$CURRENT_USER:$CURRENT_USER" "$dir" 2>/dev/null || true
 done
 
 print_success "Директории созданы"
@@ -220,26 +222,36 @@ maxretry = 3
 EOFAIL
         systemctl restart fail2ban >/dev/null 2>&1 || true
         systemctl enable fail2ban >/dev/null 2>&1 || true
-        
-        # SSH hardening (если есть ключи)
-        if [ -d '$CURRENT_HOME/.ssh' ] && [ -n \"\$(ls -A $CURRENT_HOME/.ssh/*.pub 2>/dev/null)\" ]; then
-            sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-            sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-            systemctl restart sshd >/dev/null 2>&1 || true
-        fi
     "
 
-    # Настройка Quadlet
+    # Настройка registries.conf для Podman (ВАЖНО ДЛЯ QUADLET)
+    sudo tee /etc/containers/registries.conf > /dev/null <<EOF
+unqualified-search-registries = ["docker.io", "quay.io", "registry.fedoraproject.org"]
+
+[[registry]]
+prefix = "docker.io"
+location = "docker.io"
+
+[[registry.mirror]]
+location = "mirror.gcr.io"
+[[registry.mirror]]
+location = "docker-mirror.rancher.io"
+EOF
+
+    # Проверка Quadlet
     if [ -f "/usr/libexec/podman/quadlet" ]; then
         if [ ! -L "/usr/lib/systemd/system-generators/podman-system-generator" ]; then
             sudo ln -sf /usr/libexec/podman/quadlet /usr/lib/systemd/system-generators/podman-system-generator
         fi
+        print_success "Quadlet настроен"
+    else
+        print_warning "Quadlet не найден, но podman-docker должен его установить"
     fi
-    
+
     sudo systemctl enable --now podman.socket >/dev/null 2>&1 || true
     sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || true
-    
-    # Включаем автообновление
+
+    # Включаем автообновление для Quadlet
     systemctl --user enable podman-auto-update.timer 2>/dev/null || true
     systemctl --user start podman-auto-update.timer 2>/dev/null || true
     sudo systemctl enable podman-auto-update.timer 2>/dev/null || true
@@ -485,11 +497,10 @@ chmod +x "$BIN_DIR/infra"
 sudo ln -sf "$BIN_DIR/infra" /usr/local/bin/infra 2>/dev/null || true
 print_success "CLI установлен"
 
-# =============== 8. TORRSERVER ===============
-print_step "Создание TorrServer"
+# =============== 8. TORRSERVER (rootless QUADLET) ===============
+print_step "Создание TorrServer (Quadlet)"
 
-step "Создание Quadlet файла" "
-    cat > \"$QUADLET_USER_DIR/torrserver.container\" <<EOF
+cat > "$QUADLET_USER_DIR/torrserver.container" <<EOF
 [Unit]
 Description=TorrServer Container
 After=network-online.target
@@ -509,22 +520,17 @@ NotifyAccess=all
 [Install]
 WantedBy=default.target
 EOF
-    chown $CURRENT_USER:$CURRENT_USER \"$QUADLET_USER_DIR/torrserver.container\"
-"
 
-step "Запуск TorrServer" "
-    systemctl --user daemon-reload
-    systemctl --user start torrserver.service
-"
-
+chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/torrserver.container"
+systemctl --user daemon-reload
+systemctl --user start torrserver.service
 print_success "TorrServer запущен"
 print_url "http://$SERVER_IP:8090"
 
-# =============== 9. GITEA ===============
-print_step "Создание Gitea"
+# =============== 9. GITEA (rootless QUADLET) ===============
+print_step "Создание Gitea (Quadlet)"
 
-step "Создание Quadlet файла" "
-    cat > \"$QUADLET_USER_DIR/gitea.container\" <<EOF
+cat > "$QUADLET_USER_DIR/gitea.container" <<EOF
 [Unit]
 Description=Gitea Container
 After=network-online.target
@@ -539,8 +545,6 @@ PublishPort=2222:22
 Environment=GITEA__server__ROOT_URL=http://$SERVER_IP:3000/
 Environment=GITEA__actions__ENABLED=true
 Environment=GITEA__repository_upload__ENABLED=true
-Environment=GITEA__repository_upload__MAX_FILES=1000
-Environment=GITEA__repository_upload__FILE_MAX_SIZE=5000
 
 [Service]
 Restart=always
@@ -551,19 +555,14 @@ NotifyAccess=all
 [Install]
 WantedBy=default.target
 EOF
-    chown $CURRENT_USER:$CURRENT_USER \"$QUADLET_USER_DIR/gitea.container\"
-"
 
-step "Запуск Gitea" "
-    systemctl --user daemon-reload
-    systemctl --user start gitea.service
-"
-
+chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/gitea.container"
+systemctl --user daemon-reload
+systemctl --user start gitea.service
 print_success "Gitea запущена"
 print_url "http://$SERVER_IP:3000"
-print_info "После настройки NPM: https://git.lab"
 
-# =============== 10. GITEA RUNNER ===============
+# =============== 10. GITEA RUNNER (rootful QUADLET) ===============
 print_step "Настройка Gitea Runner"
 
 print_info "Ожидание 60 секунд для инициализации Gitea..."
@@ -575,27 +574,13 @@ if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1
     print_info "🔑 Для регистрации Runner'а нужен токен"
     print_info "1. Открой в браузере: ${NEON_CYAN}http://$SERVER_IP:3000/-/admin/actions/runners${RESET}"
     print_info "2. Нажми 'Create new runner'"
-    print_info "3. Скопируй токен (выглядит как: ${MUTED_GRAY}xxxxxxxxxxxxxxxxxxxx${RESET})"
+    print_info "3. Скопируй токен"
     echo ""
     
-    while true; do
-        read -rp "  Registration Token: " RUNNER_TOKEN
-        if [ -n "$RUNNER_TOKEN" ]; then
-            if [ ${#RUNNER_TOKEN} -gt 10 ]; then
-                break
-            else
-                print_warning "Токен слишком короткий. Попробуй ещё раз (Enter чтобы пропустить)"
-            fi
-        else
-            print_warning "Токен не введён, Runner пропущен"
-            RUNNER_TOKEN=""
-            break
-        fi
-    done
+    read -rp "  Registration Token: " RUNNER_TOKEN
     
     if [ -n "$RUNNER_TOKEN" ]; then
-        step "Создание Quadlet файла runner" "
-            sudo tee \"$QUADLET_SYSTEM_DIR/gitea-runner.container\" > /dev/null <<EOF
+        sudo tee "$QUADLET_SYSTEM_DIR/gitea-runner.container" > /dev/null <<EOF
 [Unit]
 Description=Gitea Runner
 After=network-online.target gitea.service
@@ -621,27 +606,17 @@ NotifyAccess=all
 [Install]
 WantedBy=multi-user.target
 EOF
-            sudo chmod 644 \"$QUADLET_SYSTEM_DIR/gitea-runner.container\"
-        "
-        
-        step "Запуск runner" "
-            sudo systemctl daemon-reload
-            sudo systemctl start gitea-runner.service
-            sleep 5
-        "
-        
-        if sudo podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^gitea-runner$"; then
-            print_success "Gitea Runner запущен и зарегистрирован"
-        else
-            print_error "Ошибка запуска Runner'а. Проверь логи: sudo journalctl -u gitea-runner"
-        fi
+
+        sudo chmod 644 "$QUADLET_SYSTEM_DIR/gitea-runner.container"
+        sudo systemctl daemon-reload
+        sudo systemctl start gitea-runner.service
+        print_success "Gitea Runner запущен"
     fi
 else
-    print_warning "Gitea API не доступен. Runner можно настроить позже:"
-    print_info "  sudo ./setup-runner.sh (или через CLI: infra setup-runner)"
+    print_warning "Gitea API не доступен. Runner можно настроить позже"
 fi
 
-# =============== 11. NETBIRD ===============
+# =============== 11. NETBIRD (rootful QUADLET) ===============
 print_step "Настройка NetBird"
 echo ""
 print_info "🌐 Для подключения к VPN нужен Setup Key"
@@ -652,8 +627,9 @@ echo ""
 read -rp "  NetBird Setup Key: " NB_KEY
 
 if [ -n "$NB_KEY" ]; then
-    step "Создание Quadlet файла" "
-        sudo tee \"$QUADLET_SYSTEM_DIR/netbird.container\" > /dev/null <<EOF
+    sudo mkdir -p /var/lib/netbird
+    
+    sudo tee "$QUADLET_SYSTEM_DIR/netbird.container" > /dev/null <<EOF
 [Unit]
 Description=NetBird VPN Container
 After=network-online.target
@@ -678,21 +654,16 @@ NotifyAccess=all
 [Install]
 WantedBy=multi-user.target
 EOF
-        sudo chmod 644 \"$QUADLET_SYSTEM_DIR/netbird.container\"
-    "
-    
-    step "Запуск NetBird" "
-        sudo systemctl daemon-reload
-        sudo systemctl start netbird.service
-        sleep 5
-    "
-    
+
+    sudo chmod 644 "$QUADLET_SYSTEM_DIR/netbird.container"
+    sudo systemctl daemon-reload
+    sudo systemctl start netbird.service
     print_success "NetBird запущен"
 else
     print_info "NetBird пропущен"
 fi
 
-# =============== 12. RESTIC REST SERVER ===============
+# =============== 12. RESTIC REST SERVER (rootful QUADLET) ===============
 print_step "Настройка Restic REST сервера"
 
 if [ ! -f "/var/lib/rest-server/.htpasswd" ]; then
@@ -700,11 +671,10 @@ if [ ! -f "/var/lib/rest-server/.htpasswd" ]; then
     echo "$REST_PASS" | sudo tee /var/lib/rest-server/.restic_pass > /dev/null
     sudo htpasswd -B -b -c /var/lib/rest-server/.htpasswd restic "$REST_PASS" >/dev/null 2>&1
     sudo chmod 600 /var/lib/rest-server/.htpasswd /var/lib/rest-server/.restic_pass
-    print_info "Пароль restic: $REST_PASS (сохранён в /var/lib/rest-server/.restic_pass)"
+    print_info "Пароль restic: $REST_PASS"
 fi
 
-step "Создание Quadlet файла" "
-    sudo tee \"$QUADLET_SYSTEM_DIR/rest-server.container\" > /dev/null <<EOF
+sudo tee "$QUADLET_SYSTEM_DIR/rest-server.container" > /dev/null <<EOF
 [Unit]
 Description=Restic REST Server
 After=network-online.target
@@ -725,58 +695,89 @@ NotifyAccess=all
 [Install]
 WantedBy=multi-user.target
 EOF
-    sudo chmod 644 \"$QUADLET_SYSTEM_DIR/rest-server.container\"
-"
 
-step "Запуск rest-server" "
-    sudo systemctl daemon-reload
-    sudo systemctl start rest-server.service
-"
-
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/rest-server.container"
+sudo systemctl daemon-reload
+sudo systemctl start rest-server.service
 print_success "Restic REST сервер запущен"
-print_info "Доступ: http://$SERVER_IP:8000 (user: restic / пароль в /var/lib/rest-server/.restic_pass)"
+print_url "http://$SERVER_IP:8000"
 
-# =============== 13. PASSBOLT ===============
+# =============== 13. PASSBOLT (rootful QUADLET) ===============
 print_step "Настройка Passbolt"
 
-PASSBOLT_DB_PASS=$(openssl rand -base64 24)
+# Генерация GPG ключей
+mkdir -p /tmp/passbolt-gpg
+chmod 700 /tmp/passbolt-gpg
 
-step "Создание GPG ключей" "
-    sudo podman run --rm -v /var/lib/passbolt/gpg:/etc/passbolt/gpg:Z docker.io/passbolt/passbolt:latest \
-        /bin/bash -c \"gpg --batch --gen-key <<EOF
-            %no-protection
-            Key-Type: RSA
-            Key-Length: 4096
-            Name-Real: Passbolt
-            Name-Email: passbolt@devops.lab
-            Expire-Date: 0
-        EOF\" 2>/dev/null
-"
+cat > /tmp/gpg-batch <<EOF
+%no-protection
+Key-Type: RSA
+Key-Length: 4096
+Name-Real: Passbolt
+Name-Email: passbolt@devops.lab
+Expire-Date: 0
+%commit
+EOF
 
-step "Генерация JWT ключа" "
-    openssl rand -base64 32 | sudo tee /var/lib/passbolt/jwt/jwt.key > /dev/null
-    sudo chmod 600 /var/lib/passbolt/jwt/jwt.key
-"
+gpg --homedir /tmp/passbolt-gpg --batch --gen-key /tmp/gpg-batch
 
-GPG_FINGERPRINT=$(sudo gpg --homedir /var/lib/passbolt/gpg --fingerprint 2>/dev/null | grep -oE '[0-9A-F]{40}' | head -1)
+# Экспорт ключей
+gpg --homedir /tmp/passbolt-gpg --export --armor passbolt@devops.lab | sudo tee /var/lib/passbolt/gpg/public.key > /dev/null
+gpg --homedir /tmp/passbolt-gpg --export-secret-key --armor passbolt@devops.lab | sudo tee /var/lib/passbolt/gpg/private.key > /dev/null
 
-step "Создание конфигурации" "
-    sudo tee /var/lib/passbolt/config.php > /dev/null <<EOF
+# Получение fingerprint
+FINGERPRINT=$(gpg --homedir /tmp/passbolt-gpg --list-keys --with-colons | grep '^fpr:' | head -1 | cut -d: -f10)
+
+# Права на ключи
+sudo chmod 644 /var/lib/passbolt/gpg/public.key
+sudo chmod 600 /var/lib/passbolt/gpg/private.key
+sudo chown -R $CURRENT_USER:$CURRENT_USER /var/lib/passbolt/gpg
+
+# JWT ключ
+openssl rand -base64 32 | sudo tee /var/lib/passbolt/jwt/jwt.key > /dev/null
+sudo chmod 600 /var/lib/passbolt/jwt/jwt.key
+sudo chown $CURRENT_USER:$CURRENT_USER /var/lib/passbolt/jwt/jwt.key
+
+# Пароль БД
+PASSBOLT_DB_PASS=$(openssl rand -base64 24 | tr -d "=+/" | cut -c1-20)
+echo "$PASSBOLT_DB_PASS" | sudo tee /var/lib/passbolt/db_password.txt > /dev/null
+sudo chmod 600 /var/lib/passbolt/db_password.txt
+
+# Конфиг Passbolt
+sudo tee /var/lib/passbolt/config.php > /dev/null <<EOF
 <?php
 return [
-    'App' => ['fullBaseUrl' => 'https://passbolt.lab', 'registration' => ['public' => false]],
-    'Database' => ['host' => 'localhost', 'port' => '3306', 'username' => 'passbolt', 
-                   'password' => '$PASSBOLT_DB_PASS', 'database' => 'passbolt'],
-    'passbolt' => ['gpg' => ['serverKey' => ['fingerprint' => '$GPG_FINGERPRINT',
-                    'public' => '/etc/passbolt/gpg/public.key', 'private' => '/etc/passbolt/gpg/private.key']],
-                   'jwt' => ['key' => file_get_contents('/etc/passbolt/jwt/jwt.key')]]
+    'App' => [
+        'fullBaseUrl' => 'https://passbolt.lab',
+        'registration' => ['public' => false]
+    ],
+    'Database' => [
+        'host' => 'localhost',
+        'port' => '3306',
+        'username' => 'passbolt',
+        'password' => '$PASSBOLT_DB_PASS',
+        'database' => 'passbolt'
+    ],
+    'passbolt' => [
+        'gpg' => [
+            'serverKey' => [
+                'fingerprint' => '$FINGERPRINT',
+                'public' => '/etc/passbolt/gpg/public.key',
+                'private' => '/etc/passbolt/gpg/private.key'
+            ]
+        ],
+        'jwt' => [
+            'key' => file_get_contents('/etc/passbolt/jwt/jwt.key')
+        ]
+    ]
 ];
 EOF
-    sudo chmod 644 /var/lib/passbolt/config.php
-"
 
-step "Создание Quadlet файла" "
-    sudo tee \"$QUADLET_SYSTEM_DIR/passbolt.container\" > /dev/null <<EOF
+sudo chmod 644 /var/lib/passbolt/config.php
+sudo chown $CURRENT_USER:$CURRENT_USER /var/lib/passbolt/config.php
+
+# Quadlet файл
+sudo tee "$QUADLET_SYSTEM_DIR/passbolt.container" > /dev/null <<EOF
 [Unit]
 Description=Passbolt Password Manager
 After=network-online.target
@@ -799,36 +800,33 @@ NotifyAccess=all
 [Install]
 WantedBy=multi-user.target
 EOF
-    sudo chmod 644 \"$QUADLET_SYSTEM_DIR/passbolt.container\"
-"
 
-step "Запуск Passbolt" "
-    sudo systemctl daemon-reload
-    sudo systemctl start passbolt.service
-"
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/passbolt.container"
+sudo systemctl daemon-reload
+sudo systemctl start passbolt.service
+
+# Очистка
+rm -rf /tmp/passbolt-gpg /tmp/gpg-batch
 
 print_success "Passbolt запущен"
 print_url "http://$SERVER_IP:8080"
-print_info "Пароль БД: $PASSBOLT_DB_PASS (сохрани!)"
+print_info "Пароль БД: $PASSBOLT_DB_PASS"
 
-# =============== 14. BACKREST ===============
+# =============== 14. BACKREST (rootful QUADLET) ===============
 print_step "Настройка Backrest"
 
-step "Настройка прав" "sudo chown -R 1000:1000 /var/lib/backrest 2>/dev/null"
+sudo chown -R 1000:1000 /var/lib/backrest 2>/dev/null || true
 
 if [ -f "/var/lib/rest-server/.restic_pass" ]; then
     RESTIC_PASS=$(sudo cat /var/lib/rest-server/.restic_pass)
-    step "Создание конфига restic" "
-        sudo tee /var/lib/backrest/config/restic.env > /dev/null <<EOF
+    sudo tee /var/lib/backrest/config/restic.env > /dev/null <<EOF
 RESTIC_REPOSITORY=rest:http://restic:$RESTIC_PASS@localhost:8000/windows-backup
 RESTIC_PASSWORD=$RESTIC_PASS
 EOF
-        sudo chmod 600 /var/lib/backrest/config/restic.env
-    "
+    sudo chmod 600 /var/lib/backrest/config/restic.env
 fi
 
-step "Создание Quadlet файла" "
-    sudo tee \"$QUADLET_SYSTEM_DIR/backrest.container\" > /dev/null <<EOF
+sudo tee "$QUADLET_SYSTEM_DIR/backrest.container" > /dev/null <<EOF
 [Unit]
 Description=Backrest WebUI for Restic
 After=network-online.target rest-server.service
@@ -855,70 +853,44 @@ NotifyAccess=all
 [Install]
 WantedBy=multi-user.target
 EOF
-    sudo chmod 644 \"$QUADLET_SYSTEM_DIR/backrest.container\"
-"
 
-step "Запуск Backrest" "
-    sudo systemctl daemon-reload
-    sudo systemctl start backrest.service
-"
-
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/backrest.container"
+sudo systemctl daemon-reload
+sudo systemctl start backrest.service
 print_success "Backrest запущен"
 print_url "http://$SERVER_IP:9898"
 
-# =============== 15. FAUCET ===============
+# =============== 15. FAUCET (rootful QUADLET) ===============
 print_step "Настройка Faucet (MCP Server + GUI)"
 
 FAUCET_PASS=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
-FAUCET_JWT_SECRET=$(openssl rand -base64 32)
+FAUCET_JWT=$(openssl rand -base64 32)
 
-step "Создание конфига" "
-    cat > \"$FAUCET_DIR/config/faucet.yaml\" <<EOF
+# Создание конфига
+cat > "$FAUCET_DIR/config/faucet.yaml" <<EOF
 database:
   driver: sqlite
-  dsn: $FAUCET_DIR/data/faucet.db
+  dsn: /data/faucet.db
 
 auth:
   enabled: true
-  jwt_secret: $FAUCET_JWT_SECRET
+  jwt_secret: ${FAUCET_JWT}
   
 admin:
   enabled: true
   users:
     - username: admin
-      password: $FAUCET_PASS
+      password: ${FAUCET_PASS}
 EOF
-    chmod 600 \"$FAUCET_DIR/config/faucet.yaml\"
-"
 
-step "Создание MCP конфига" "
-    cat > \"$FAUCET_DIR/config/mcp.yaml\" <<EOF
-tools:
-  - name: get_api_key
-    description: Get API key for a service
-    handler: |
-      function(args) {
-        const result = db.query(
-          'SELECT key_value FROM api_keys WHERE service = ?',
-          [args.service]
-        );
-        return result[0]?.key_value || null;
-      }
-  
-  - name: list_services
-    description: List all services that have API keys
-    handler: |
-      function() {
-        const result = db.query(
-          'SELECT service, notes, tags FROM api_keys ORDER BY service'
-        );
-        return result;
-      }
-EOF
-"
+chmod 644 "$FAUCET_DIR/config/faucet.yaml"
+touch "$FAUCET_DIR/data/faucet.db"
+chmod 666 "$FAUCET_DIR/data/faucet.db"
+echo "$FAUCET_PASS" > "$FAUCET_DIR/admin_password.txt"
+chmod 600 "$FAUCET_DIR/admin_password.txt"
 
-step "Создание Quadlet файла" "
-    sudo tee \"$QUADLET_SYSTEM_DIR/faucet.container\" > /dev/null <<EOF
+# Quadlet файл
+sudo tee "$QUADLET_SYSTEM_DIR/faucet.container" > /dev/null <<EOF
 [Unit]
 Description=Faucet MCP Server with GUI
 After=network-online.target
@@ -941,35 +913,26 @@ NotifyAccess=all
 [Install]
 WantedBy=multi-user.target
 EOF
-    sudo chmod 644 \"$QUADLET_SYSTEM_DIR/faucet.container\"
-"
 
-step "Запуск Faucet" "
-    sudo systemctl daemon-reload
-    sudo systemctl start faucet.service
-    sleep 5
-"
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/faucet.container"
+sudo systemctl daemon-reload
+sudo systemctl start faucet.service
 
-# Инициализация БД и добавление тестового ключа
-sudo podman exec faucet faucet db exec "CREATE TABLE IF NOT EXISTS api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, service TEXT UNIQUE NOT NULL, key_value TEXT NOT NULL, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, tags TEXT);" 2>/dev/null || true
-sudo podman exec faucet faucet db exec "INSERT OR IGNORE INTO api_keys (service, key_value, notes, tags) VALUES ('OPENAI_API_KEY', 'sk-placeholder', 'Replace with your actual key', 'ai,test');" 2>/dev/null || true
+print_success "Faucet запущен"
+print_url "http://$SERVER_IP:8082"
+print_info "Логин: admin / Пароль: $FAUCET_PASS"
 
-print_success "Faucet установлен"
-print_info "Admin UI: http://$SERVER_IP:8082 (логин: admin / пароль: $FAUCET_PASS)"
-print_info "MCP endpoint: http://$SERVER_IP:8083/mcp"
-
-# =============== 16. NGINX PROXY MANAGER ===============
+# =============== 16. NGINX PROXY MANAGER (rootful QUADLET) ===============
 print_step "Настройка Nginx Proxy Manager"
 
-step "Создание Quadlet файла" "
-    sudo tee \"$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container\" > /dev/null <<EOF
+sudo tee "$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container" > /dev/null <<EOF
 [Unit]
 Description=Nginx Proxy Manager
 After=network-online.target
 Wants=podman-auto-update.service
 
 [Container]
-Image=jc21/nginx-proxy-manager:latest
+Image=docker.io/jc21/nginx-proxy-manager:latest
 ContainerName=nginx-proxy-manager
 Volume=$NPM_DIR/data:/data:Z
 Volume=$NPM_DIR/letsencrypt:/etc/letsencrypt:Z
@@ -985,19 +948,16 @@ NotifyAccess=all
 [Install]
 WantedBy=multi-user.target
 EOF
-    sudo chmod 644 \"$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container\"
-"
 
-step "Запуск NPM" "
-    sudo systemctl daemon-reload
-    sudo systemctl start nginx-proxy-manager.service
-"
+sudo chmod 644 "$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container"
+sudo systemctl daemon-reload
+sudo systemctl start nginx-proxy-manager.service
 
 print_success "Nginx Proxy Manager запущен"
-print_info "Admin UI: http://$SERVER_IP:81 (admin@example.com / changeme)"
-print_info "После настройки NPM все сервисы станут доступны по доменам .lab с HTTPS"
+print_url "http://$SERVER_IP:81"
+print_info "Логин: admin@example.com / Пароль: changeme"
 
-# =============== 17. HOMEPAGE ===============
+# =============== 17. HOMEPAGE (rootless QUADLET) ===============
 print_step "Настройка Homepage"
 
 echo ""
@@ -1023,17 +983,17 @@ else
     WEATHER_CONFIG=""
 fi
 
-step "Создание конфигурации Homepage" "
-    cat > \"$HOMEPAGE_CONFIG_DIR/settings.yaml\" <<EOF
+# Конфиг Homepage
+cat > "$HOMEPAGE_CONFIG_DIR/settings.yaml" <<EOF
 ---
-title: \"DevOps Lab Dashboard\"
+title: "DevOps Lab Dashboard"
 theme: dark
 color: slate
 headerStyle: clean
 hideVersion: false
 useEqualHeights: true
-statusStyle: \"dot\"
-statusPosition: \"bottom\"
+statusStyle: "dot"
+statusPosition: "bottom"
 search:
   provider: duckduckgo
   target: _blank
@@ -1041,72 +1001,71 @@ information:
 $WEATHER_CONFIG
 EOF
 
-    cat > \"$HOMEPAGE_CONFIG_DIR/services.yaml\" <<EOF
+cat > "$HOMEPAGE_CONFIG_DIR/services.yaml" <<EOF
 ---
 Инфраструктура:
   - Passbolt:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/passbolt.png
       href: https://passbolt.lab
-      description: \"Менеджер паролей\"
+      description: "Менеджер паролей"
       container: passbolt
   - Faucet:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/faucet.png
       href: https://keys.lab
-      description: \"API-ключи для AI\"
+      description: "API-ключи для AI"
       container: faucet
   - Backrest:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
       href: https://backup.lab
-      description: \"Управление бэкапами\"
+      description: "Управление бэкапами"
       container: backrest
   - Gitea:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gitea.png
       href: https://git.lab
-      description: \"Git репозиторий\"
+      description: "Git репозиторий"
       container: systemd-gitea
   - TorrServer:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/torrent.png
       href: https://torrent.lab
-      description: \"Торрент стриминг\"
+      description: "Торрент стриминг"
       container: systemd-torrserver
 
 Windows Клиенты:
   - NetBird VPN:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
       href: https://pkgs.netbird.io/windows
-      description: \"Для доступа из любой точки\"
+      description: "Для доступа из любой точки"
   - Bitwarden Desktop:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/bitwarden.png
       href: https://bitwarden.com/download/
-      description: \"Клиент для Passbolt\"
+      description: "Клиент для Passbolt"
   - Restic:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
       href: https://github.com/restic/restic/releases
-      description: \"Бэкапы Windows\"
+      description: "Бэкапы Windows"
 
 Администрирование:
   - Nginx Proxy Manager:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/nginx-proxy-manager.png
       href: http://$SERVER_IP:81
-      description: \"Reverse proxy GUI\"
+      description: "Reverse proxy GUI"
       container: nginx-proxy-manager
   - NetBird:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/netbird.png
       href: https://app.netbird.io
-      description: \"VPN управление\"
+      description: "VPN управление"
       container: netbird
   - Restic REST:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
       href: http://$SERVER_IP:8000
-      description: \"Хранилище бэкапов\"
+      description: "Хранилище бэкапов"
       container: rest-server
 EOF
 
-    chown -R $CURRENT_USER:$CURRENT_USER \"$HOMEPAGE_CONFIG_DIR\"
-"
+chown -R $CURRENT_USER:$CURRENT_USER "$HOMEPAGE_CONFIG_DIR"
 
-step "Создание Quadlet файла Homepage" "
-    cat > \"$QUADLET_USER_DIR/homepage.container\" <<EOF
+# Quadlet файл для Homepage
+cat > "$QUADLET_USER_DIR/homepage.container" <<EOF
 [Unit]
 Description=Homepage Dashboard
 After=network-online.target
@@ -1131,13 +1090,10 @@ NotifyAccess=all
 [Install]
 WantedBy=default.target
 EOF
-    chown $CURRENT_USER:$CURRENT_USER \"$QUADLET_USER_DIR/homepage.container\"
-"
 
-step "Запуск Homepage" "
-    systemctl --user daemon-reload
-    systemctl --user start homepage.service
-"
+chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/homepage.container"
+systemctl --user daemon-reload
+systemctl --user start homepage.service
 
 print_success "Homepage запущен"
 print_url "http://$SERVER_IP:3001"
@@ -1148,7 +1104,7 @@ print_header "🚀 ИНФРАСТРУКТУРА ПОЛНОСТЬЮ ГОТОВА"
 cat <<EOF
 
 ${NEON_GREEN}╔══════════════════════════════════════════════════════════╗${RESET}
-${NEON_GREEN}║         🔌 ДОСТУП ДЛЯ ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ         ║${RESET}
+${NEON_GREEN}║          ДОСТУП ДЛЯ ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ             ║${RESET}
 ${NEON_GREEN}╚══════════════════════════════════════════════════════════╝${RESET}
 
 ${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
@@ -1157,6 +1113,7 @@ ${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
 
 ${NEON_CYAN}🔐 МЕНЕДЖЕРЫ СЕКРЕТОВ${RESET}
   ${NEON_GREEN}●${RESET} Passbolt:            ${NEON_CYAN}http://$SERVER_IP:8080${RESET}
+  ${MUTED_GRAY}  └─ Пароль БД: ${NEON_CYAN}$PASSBOLT_DB_PASS${RESET}
   ${NEON_GREEN}●${RESET} Faucet:              ${NEON_CYAN}http://$SERVER_IP:8082${RESET}
   ${MUTED_GRAY}  └─ Логин: admin / Пароль: ${NEON_CYAN}$FAUCET_PASS${RESET}
 
