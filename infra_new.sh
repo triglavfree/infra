@@ -1,30 +1,31 @@
 #!/bin/bash
 set -uo pipefail
 # =============================================================================
-# INFRASTRUCTURE v11.0.6 (ТЕСТОВАЯ)
+# INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ АБСОЛЮТНАЯ)
 # =============================================================================
 # Совместная работа команды ❤️
 # 
-# ✅ Passbolt — менеджер паролей
-# ✅ secretctl — API-ключи с Web UI и Windows GUI
+# ✅ Passbolt — менеджер паролей для людей
+# ✅ Faucet — MCP-сервер + GUI для API-ключей (AI-агенты)
 # ✅ Backrest — управление бэкапами
+# ✅ Restic REST — хранилище бэкапов
 # ✅ Gitea + Runner — Git с CI/CD
 # ✅ TorrServer — торрент-стриминг
 # ✅ Homepage — красивый дашборд с погодой
 # ✅ Nginx Proxy Manager — reverse proxy с GUI
 # ✅ NetBird VPN — доступ из любой точки
-# ✅ Restic REST — хранилище бэкапов
 # ✅ mkcert — локальный HTTPS
+# ✅ LVM шифрование — защита диска
 # =============================================================================
 
-# Цвета
+# =============== 1. ЦВЕТА ===============
 if [ -t 1 ]; then
     ncolors=$(tput colors 2>/dev/null || echo 0)
     if [ $ncolors -ge 256 ]; then
-        NEON_CYAN=$(tput setaf 81); NEON_GREEN=$(tput setaf 84)
-        NEON_YELLOW=$(tput setaf 220); NEON_RED=$(tput setaf 203)
-        NEON_PURPLE=$(tput setaf 141); NEON_BLUE=$(tput setaf 75)
-        SOFT_WHITE=$(tput setaf 252); MUTED_GRAY=$(tput setaf 245)
+        NEON_CYAN=$(tput setaf 51); NEON_GREEN=$(tput setaf 48)
+        NEON_YELLOW=$(tput setaf 220); NEON_RED=$(tput setaf 196)
+        NEON_PURPLE=$(tput setaf 135); NEON_BLUE=$(tput setaf 39)
+        SOFT_WHITE=$(tput setaf 255); MUTED_GRAY=$(tput setaf 245)
         DIM_GRAY=$(tput setaf 240); BOLD=$(tput bold); RESET=$(tput sgr0)
     else
         NEON_CYAN=$(tput setaf 6); NEON_GREEN=$(tput setaf 2)
@@ -44,6 +45,7 @@ CURRENT_UID=$(id -u "$CURRENT_USER")
 CURRENT_HOME="$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
+# =============== 2. ФУНКЦИИ ===============
 print_header() { echo ""; echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"; echo -e "${NEON_CYAN}${BOLD}  $1${RESET}"; echo -e "${DIM_GRAY}─────────────────────────────────────────${RESET}"; echo ""; }
 print_step() { echo ""; echo -e "${NEON_CYAN}${BOLD}▸${RESET} ${SOFT_WHITE}${BOLD}$1${RESET}"; echo -e "${DIM_GRAY}  $(printf '─%.0s' $(seq 1 40))${RESET}"; }
 print_success() { echo -e "  ${NEON_GREEN}✓${RESET} ${SOFT_WHITE}$1${RESET}"; }
@@ -52,30 +54,35 @@ print_error() { echo -e "  ${NEON_RED}✗${RESET} ${BOLD}$1${RESET}" >&2; }
 print_info() { echo -e "  ${NEON_BLUE}ℹ${RESET} ${MUTED_GRAY}$1${RESET}"; }
 print_url() { echo -e "  ${NEON_CYAN}➜${RESET} ${BOLD}${NEON_CYAN}$1${RESET}"; }
 
-# Функция для пошагового выполнения
+# Универсальная функция для шагов
 step() {
     local msg=$1
     local cmd=$2
+    local critical=${3:-false}
     echo -ne "  ${MUTED_GRAY}➜${RESET} $msg... "
     if eval "$cmd" >/dev/null 2>&1; then
         echo -e "${NEON_GREEN}✓${RESET}"
         return 0
     else
         echo -e "${NEON_RED}✗${RESET}"
+        if [ "$critical" = true ]; then
+            print_error "Критическая ошибка. Прерывание."
+            exit 1
+        fi
         return 1
     fi
 }
 
-# Проверка прав
+# =============== 3. ПРОВЕРКА ПРАВ ===============
 if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
     print_error "Запускайте от обычного пользователя с sudo!"
     exit 1
 fi
 
-print_header "🚀 INFRASTRUCTURE v11.0.6 (ТЕСТОВАЯ)"
+print_header "🚀 INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ АБСОЛЮТНАЯ)"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
-# =============== ДИРЕКТОРИИ ===============
+# =============== 4. ДИРЕКТОРИИ ===============
 print_step "Создание структуры"
 
 INFRA_DIR="$CURRENT_HOME/infra"
@@ -84,6 +91,8 @@ BIN_DIR="$INFRA_DIR/bin"
 LOGS_DIR="$INFRA_DIR/logs"
 BACKUP_DIR="$INFRA_DIR/backups"
 CERT_DIR="$INFRA_DIR/certs"
+FAUCET_DIR="$INFRA_DIR/faucet"
+NPM_DIR="$INFRA_DIR/nginx-proxy-manager"
 QUADLET_USER_DIR="$CURRENT_HOME/.config/containers/systemd"
 QUADLET_SYSTEM_DIR="/etc/containers/systemd"
 
@@ -91,7 +100,8 @@ USER_DIRS=(
     "$INFRA_DIR" "$VOLUMES_DIR" "$BIN_DIR" "$LOGS_DIR" "$BACKUP_DIR"
     "$BACKUP_DIR/cache" "$BACKUP_DIR/snapshots" "$CERT_DIR"
     "$VOLUMES_DIR/gitea" "$VOLUMES_DIR/torrserver" "$VOLUMES_DIR/homepage/config"
-    "$INFRA_DIR/nginx-proxy-manager/data" "$INFRA_DIR/nginx-proxy-manager/letsencrypt"
+    "$FAUCET_DIR"/{data,config}
+    "$NPM_DIR"/{data,letsencrypt}
     "$QUADLET_USER_DIR"
 )
 
@@ -116,11 +126,11 @@ done
 
 print_success "Директории созданы"
 
-# =============== BOOTSTRAP ===============
+# =============== 5. BOOTSTRAP ===============
 print_step "Подготовка системы"
 
 if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
-    print_info "Настройка системы..."
+    print_info "Настройка системы (это займёт несколько минут)..."
 
     RAM_MB=$(free -m | awk '/^Mem:/ {print $2}')
     SWAP_MB=$((RAM_MB * 2))
@@ -130,7 +140,7 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq >/dev/null 2>&1
         apt-get upgrade -y -qq >/dev/null 2>&1 || true
-        apt-get install -y -qq uidmap slirp4netns fuse-overlayfs curl openssl ufw fail2ban apache2-utils argon2 jq wget golang >/dev/null 2>&1 || true
+        apt-get install -y -qq uidmap slirp4netns fuse-overlayfs curl openssl ufw fail2ban apache2-utils argon2 jq wget >/dev/null 2>&1 || true
 
         # Swap
         if [ ! -f /swapfile ] && [ \$(free | grep -c Swap) -eq 0 ] || [ \$(free | awk '/^Swap:/ {print \$2}') -eq 0 ]; then
@@ -155,26 +165,27 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
             usermod --add-subuids 100000-165535 --add-subgids 100000-165535 '$CURRENT_USER' 2>/dev/null || true
         fi
 
-        # UFW (ТИХИЙ РЕЖИМ)
+        # UFW (ВСЕ ПОРТЫ ЯВНО, БЕЗ ЦИКЛА!)
         sed -i 's/DEFAULT_FORWARD_POLICY=\"DROP\"/DEFAULT_FORWARD_POLICY=\"ACCEPT\"/' /etc/default/ufw
         ufw --force reset >/dev/null 2>&1
         ufw default deny incoming >/dev/null 2>&1
         ufw default allow outgoing >/dev/null 2>&1
         ufw default allow routed >/dev/null 2>&1
         
-        ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1
-        ufw allow 3000/tcp comment 'Gitea HTTP' >/dev/null 2>&1
-        ufw allow 3001/tcp comment 'Homepage' >/dev/null 2>&1
-        ufw allow 2222/tcp comment 'Gitea SSH' >/dev/null 2>&1
-        ufw allow 8090/tcp comment 'TorrServer' >/dev/null 2>&1
-        ufw allow 8080/tcp comment 'Passbolt' >/dev/null 2>&1
-        ufw allow 9898/tcp comment 'Backrest' >/dev/null 2>&1
-        ufw allow 8000/tcp comment 'Restic REST' >/dev/null 2>&1
-        ufw allow 81/tcp comment 'Nginx Proxy Manager Admin' >/dev/null 2>&1
-        ufw allow 80/tcp comment 'HTTP' >/dev/null 2>&1
-        ufw allow 443/tcp comment 'HTTPS' >/dev/null 2>&1
-        ufw allow 51820/udp comment 'WireGuard/NetBird' >/dev/null 2>&1
-        ufw allow 8082/tcp comment 'secretctl Web UI' >/dev/null 2>&1
+        ufw allow 22/tcp comment 'SSH'
+        ufw allow 3000/tcp comment 'Gitea HTTP'
+        ufw allow 3001/tcp comment 'Homepage'
+        ufw allow 2222/tcp comment 'Gitea SSH'
+        ufw allow 8090/tcp comment 'TorrServer'
+        ufw allow 8080/tcp comment 'Passbolt'
+        ufw allow 9898/tcp comment 'Backrest'
+        ufw allow 8000/tcp comment 'Restic REST'
+        ufw allow 81/tcp comment 'Nginx Proxy Manager Admin'
+        ufw allow 80/tcp comment 'HTTP'
+        ufw allow 443/tcp comment 'HTTPS'
+        ufw allow 51820/udp comment 'WireGuard/NetBird'
+        ufw allow 8082/tcp comment 'Faucet Admin'
+        ufw allow 8083/tcp comment 'Faucet MCP'
         
         ufw --force enable >/dev/null 2>&1
 
@@ -203,30 +214,29 @@ else
     print_info "Bootstrap уже выполнен"
 fi
 
-# =============== mkcert ===============
+# =============== 6. mkcert ===============
 print_step "Настройка локального HTTPS"
 
-step "Загрузка mkcert" "
-    if ! command -v mkcert &> /dev/null; then
+if ! command -v mkcert &> /dev/null; then
+    step "Загрузка mkcert" "
         wget -qO /tmp/mkcert https://github.com/FiloSottile/mkcert/releases/download/v1.4.4/mkcert-v1.4.4-linux-amd64
         chmod +x /tmp/mkcert
         sudo mv /tmp/mkcert /usr/local/bin/mkcert
-    fi
-"
+    " true
+fi
 
-step "Установка локального CA" "mkcert -install"
-
-step "Генерация сертификатов для доменов" "
+step "Установка локального CA" "mkcert -install" true
+step "Генерация сертификатов" "
     mkcert -key-file \"$CERT_DIR/lab-key.pem\" \
            -cert-file \"$CERT_DIR/lab-cert.pem\" \
            localhost 127.0.0.1 $SERVER_IP \
            passbolt.lab git.lab backup.lab home.lab torrent.lab keys.lab \
            $(hostname) $(hostname).local
-"
+" true
 
 print_success "SSL сертификаты созданы"
 
-# =============== CLI ===============
+# =============== 7. CLI ===============
 print_step "Установка CLI"
 
 cat > "$BIN_DIR/infra" <<'ENDOFCLI'
@@ -235,9 +245,9 @@ INFRA_DIR="$HOME/infra"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
 # Цвета
-NEON_CYAN="\e[36m"; NEON_GREEN="\e[32m"; NEON_YELLOW="\e[33m"
-NEON_RED="\e[31m"; NEON_PURPLE="\e[35m"; NEON_BLUE="\e[34m"
-SOFT_WHITE="\e[97m"; MUTED_GRAY="\e[90m"; DIM_GRAY="\e[2m"
+NEON_CYAN="\e[38;5;51m"; NEON_GREEN="\e[38;5;48m"; NEON_YELLOW="\e[38;5;220m"
+NEON_RED="\e[38;5;196m"; NEON_PURPLE="\e[38;5;135m"; NEON_BLUE="\e[38;5;39m"
+SOFT_WHITE="\e[38;5;255m"; MUTED_GRAY="\e[38;5;245m"; DIM_GRAY="\e[38;5;240m"
 BOLD="\e[1m"; RESET="\e[0m"
 
 ICON_OK="${NEON_GREEN}●${RESET}"; ICON_FAIL="${NEON_RED}●${RESET}"
@@ -279,52 +289,79 @@ format_status() {
     esac
 }
 
+check_url() {
+    local url=$1
+    if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$url" 2>/dev/null | grep -q "200\|302\|401"; then
+        echo -e "${NEON_GREEN}✓${RESET}"
+    else
+        echo -e "${NEON_RED}✗${RESET}"
+    fi
+}
+
 status_cmd() {
     clear
-    echo -e "${NEON_CYAN}╔══════════════════════════════════════════════════╗${RESET}"
-    echo -e "${NEON_CYAN}║${RESET} ${BOLD}INFRA STATUS v11.0.6${RESET}"
-    echo -e "${NEON_CYAN}╚══════════════════════════════════════════════════╝${RESET}"
+    echo -e "${NEON_CYAN}╔══════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${NEON_CYAN}║${RESET} ${BOLD}${SOFT_WHITE}INFRA STATUS v12.0.0${RESET}                           ${NEON_CYAN}║${RESET}"
+    echo -e "${NEON_CYAN}╚══════════════════════════════════════════════════════════╝${RESET}"
 
+    # Данные о сервисах
     declare -A services=(
+        # rootless
         [gitea]="user:https://git.lab"
         [torrserver]="user:https://torrent.lab"
         [homepage]="user:https://home.lab"
-        [secretctl]="user:https://keys.lab"
+        # rootful
         [gitea-runner]="root:"
         [netbird]="root:"
         [nginx-proxy-manager]="root:http://$SERVER_IP:81"
+        [faucet]="root:https://keys.lab"
+        # backup & security
         [rest-server]="root:http://$SERVER_IP:8000"
         [passbolt]="root:https://passbolt.lab"
         [backrest]="root:https://backup.lab"
     )
 
     declare -A sections=(
-        ["Rootless Services"]="gitea torrserver homepage secretctl"
-        ["Rootful Services"]="gitea-runner netbird nginx-proxy-manager"
+        ["Rootless Services"]="gitea torrserver homepage"
+        ["Rootful Services"]="gitea-runner netbird nginx-proxy-manager faucet"
         ["Backup & Security"]="rest-server passbolt backrest"
     )
 
     for section in "Rootless Services" "Rootful Services" "Backup & Security"; do
         echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}$section${RESET}"
-        echo -e "${DIM_GRAY}──────────────────────────────────────────────────${RESET}"
+        echo -e "${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
         
         for svc in ${sections[$section]}; do
             IFS=':' read -r user url <<< "${services[$svc]}"
             svc_status=$(format_status "$(get_status $svc service $user)")
             ctr_status=$(format_status "$(get_status $svc container $user)")
-            printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "$svc" "$svc_status $ctr_status"
-            [ -n "$url" ] && printf "                ${MUTED_GRAY}→ %s${RESET}\n" "$url"
+            printf "  ${DIM_GRAY}%-18s${RESET} %s %s\n" "$svc" "$svc_status" "$ctr_status"
+            if [ -n "$url" ]; then
+                printf "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}%s${RESET} %s\n" "$url" "$(check_url "$url")"
+            fi
         done
     done
 
-    echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}Resources${RESET}"
-    echo -e "${DIM_GRAY}──────────────────────────────────────────────────${RESET}"
-    printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "Disk" "$(df -h "$INFRA_DIR" 2>/dev/null | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}')"
-    printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "Memory" "$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}')"
-    printf "  ${DIM_GRAY}%-14s${RESET} %s\n" "Containers" "user: $(podman ps -q 2>/dev/null | wc -l), system: $(sudo podman ps -q 2>/dev/null | wc -l)"
+    # NetBird IP (если есть)
+    if sudo podman ps | grep -q netbird; then
+        NB_IP=$(sudo podman exec netbird ip addr show wt0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+        if [ -n "$NB_IP" ]; then
+            echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}NetBird VPN${RESET}"
+            echo -e "${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
+            echo -e "        ${NEON_CYAN}↗${RESET} ${MUTED_GRAY}VPN IP: $NB_IP${RESET}"
+        fi
+    fi
 
-    echo -e "\n${DIM_GRAY}──────────────────────────────────────────────────${RESET}"
-    echo -e "${MUTED_GRAY}Commands: ${NEON_CYAN}status${RESET}|${NEON_CYAN}start${RESET}|${NEON_CYAN}stop${RESET}|${NEON_CYAN}restart${RESET}|${NEON_CYAN}logs${RESET}|${NEON_CYAN}clear${RESET}"
+    # Ресурсы
+    echo -e "\n${NEON_PURPLE}${ICON_ARROW}${RESET} ${BOLD}Resources${RESET}"
+    echo -e "${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
+    printf "  ${DIM_GRAY}%-12s${RESET} ${SOFT_WHITE}%s${RESET}\n" "Disk" "$(df -h "$INFRA_DIR" 2>/dev/null | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}')"
+    printf "  ${DIM_GRAY}%-12s${RESET} ${SOFT_WHITE}%s${RESET}\n" "Memory" "$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}')"
+    printf "  ${DIM_GRAY}%-12s${RESET} ${SOFT_WHITE}user: %d, system: %d${RESET}\n" "Containers" "$(podman ps -q 2>/dev/null | wc -l)" "$(sudo podman ps -q 2>/dev/null | wc -l)"
+
+    echo -e "\n${DIM_GRAY}────────────────────────────────────────────────────────${RESET}"
+    echo -e "  ${ICON_OK} running  ${ICON_FAIL} stopped  ${NEON_CYAN}↗${RESET} URL ${NEON_GREEN}✓${RESET} доступен ${NEON_RED}✗${RESET} недоступен"
+    echo -e "  ${MUTED_GRAY}Commands: ${NEON_CYAN}status${RESET}|${NEON_CYAN}start${RESET}|${NEON_CYAN}stop${RESET}|${NEON_CYAN}restart${RESET}|${NEON_CYAN}logs${RESET}|${NEON_CYAN}clear${RESET}"
 }
 
 clear_cmd() {
@@ -334,15 +371,15 @@ clear_cmd() {
 
     echo -e "  ${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
     systemctl --user stop gitea torrserver homepage 2>/dev/null
-    sudo systemctl stop gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager 2>/dev/null
+    sudo systemctl stop gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager faucet 2>/dev/null
 
     echo -e "  ${NEON_YELLOW}▸ Удаление контейнеров...${RESET}"
     podman rm -f systemd-gitea systemd-torrserver systemd-homepage 2>/dev/null
-    sudo podman rm -f gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager 2>/dev/null
+    sudo podman rm -f gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager faucet 2>/dev/null
 
     echo -e "  ${NEON_YELLOW}▸ Удаление Quadlet файлов...${RESET}"
     rm -f ~/.config/containers/systemd/{gitea,torrserver,homepage}.container
-    sudo rm -f /etc/containers/systemd/{gitea-runner,netbird,rest-server,passbolt,backrest,nginx-proxy-manager}.container
+    sudo rm -f /etc/containers/systemd/{gitea-runner,netbird,rest-server,passbolt,backrest,nginx-proxy-manager,faucet}.container
 
     systemctl --user daemon-reload
     sudo systemctl daemon-reload
@@ -364,30 +401,28 @@ case "${1:-status}" in
     status) status_cmd ;;
     logs) 
         case "$2" in
-            netbird|gitea-runner|rest-server|passbolt|backrest|nginx-proxy-manager) sudo journalctl -u "$2" -f ;;
+            netbird|gitea-runner|rest-server|passbolt|backrest|nginx-proxy-manager|faucet) sudo journalctl -u "$2" -f ;;
             gitea|torrserver|homepage) journalctl --user -u "$2" -f ;;
-            secretctl) journalctl --user -u secretctl-web -f ;;
             *) echo "Usage: infra logs <service>"; exit 1 ;;
         esac
         ;;
     stop)
         echo -e "${NEON_YELLOW}▸ Остановка сервисов...${RESET}"
         systemctl --user stop gitea torrserver homepage 2>/dev/null
-        sudo systemctl stop gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager 2>/dev/null
+        sudo systemctl stop gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager faucet 2>/dev/null
         echo -e "  ${ICON_OK} Services stopped"
         ;;
     start)
         echo -e "${NEON_GREEN}▸ Запуск сервисов...${RESET}"
         systemctl --user start gitea torrserver homepage 2>/dev/null
-        sudo systemctl start gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager 2>/dev/null
+        sudo systemctl start gitea-runner netbird rest-server passbolt backrest nginx-proxy-manager faucet 2>/dev/null
         echo -e "  ${ICON_OK} Services started"
         ;;
     restart)
         echo -e "${NEON_CYAN}▸ Перезапуск $2...${RESET}"
         case "$2" in
-            netbird|gitea-runner|rest-server|passbolt|backrest|nginx-proxy-manager) sudo systemctl restart "$2" ;;
+            netbird|gitea-runner|rest-server|passbolt|backrest|nginx-proxy-manager|faucet) sudo systemctl restart "$2" ;;
             gitea|torrserver|homepage) systemctl --user restart "$2" ;;
-            secretctl) systemctl --user restart secretctl-web ;;
             *) echo "Unknown service: $2"; exit 1 ;;
         esac
         echo -e "  ${ICON_OK} $2 restarted"
@@ -401,7 +436,7 @@ chmod +x "$BIN_DIR/infra"
 sudo ln -sf "$BIN_DIR/infra" /usr/local/bin/infra 2>/dev/null || true
 print_success "CLI установлен"
 
-# =============== TORRSERVER ===============
+# =============== 8. TORRSERVER ===============
 print_step "Создание TorrServer"
 
 step "Создание Quadlet файла" "
@@ -437,10 +472,11 @@ print_success "TorrServer запущен"
 print_info "Для настройки: http://$SERVER_IP:8090"
 print_info "После настройки NPM: https://torrent.lab"
 
-# =============== GITEA ===============
+# =============== 9. GITEA ===============
 print_step "Создание Gitea"
 
-cat > "$QUADLET_USER_DIR/gitea.container" <<EOF
+step "Создание Quadlet файла" "
+    cat > \"$QUADLET_USER_DIR/gitea.container\" <<EOF
 [Unit]
 Description=Gitea Container
 After=network-online.target
@@ -467,15 +503,19 @@ NotifyAccess=all
 [Install]
 WantedBy=default.target
 EOF
+    chown $CURRENT_USER:$CURRENT_USER \"$QUADLET_USER_DIR/gitea.container\"
+"
 
-chown "$CURRENT_USER:$CURRENT_USER" "$QUADLET_USER_DIR/gitea.container"
-systemctl --user daemon-reload
-systemctl --user start gitea.service
+step "Запуск Gitea" "
+    systemctl --user daemon-reload
+    systemctl --user start gitea.service
+"
+
 print_success "Gitea запущена"
 print_info "Для настройки: http://$SERVER_IP:3000"
 print_info "После настройки NPM: https://git.lab"
 
-# =============== GITEA RUNNER ===============
+# =============== 10. GITEA RUNNER ===============
 print_step "Настройка Gitea Runner"
 
 print_info "Ожидание 60 секунд для инициализации Gitea..."
@@ -506,10 +546,10 @@ if curl -sf --max-time 5 "http://$SERVER_IP:3000/api/v1/version" >/dev/null 2>&1
     done
     
     if [ -n "$RUNNER_TOKEN" ]; then
-        sudo mkdir -p /var/lib/gitea-runner
-        sudo chmod 755 /var/lib/gitea-runner
+        step "Создание директории" "sudo mkdir -p /var/lib/gitea-runner && sudo chmod 755 /var/lib/gitea-runner"
         
-        sudo tee "$QUADLET_SYSTEM_DIR/gitea-runner.container" > /dev/null <<EOF
+        step "Создание Quadlet файла runner" "
+            sudo tee \"$QUADLET_SYSTEM_DIR/gitea-runner.container\" > /dev/null <<EOF
 [Unit]
 Description=Gitea Runner
 After=network-online.target gitea.service
@@ -535,12 +575,15 @@ NotifyAccess=all
 [Install]
 WantedBy=multi-user.target
 EOF
-
-        sudo chmod 644 "$QUADLET_SYSTEM_DIR/gitea-runner.container"
-        sudo systemctl daemon-reload
-        sudo systemctl start gitea-runner.service
+            sudo chmod 644 \"$QUADLET_SYSTEM_DIR/gitea-runner.container\"
+        "
         
-        sleep 5
+        step "Запуск runner" "
+            sudo systemctl daemon-reload
+            sudo systemctl start gitea-runner.service
+            sleep 5
+        "
+        
         if sudo podman ps --format "{{.Names}}" 2>/dev/null | grep -q "^gitea-runner$"; then
             print_success "Gitea Runner запущен и зарегистрирован"
         else
@@ -550,10 +593,9 @@ EOF
 else
     print_warning "Gitea API не доступен. Runner можно настроить позже командой:"
     print_info "  sudo ./setup-runner.sh"
-    print_info "Или вручную после запуска Gitea"
 fi
 
-# =============== NETBIRD ===============
+# =============== 11. NETBIRD ===============
 print_step "Настройка NetBird"
 read -rp "  NetBird Setup Key (Enter - пропустить): " NB_KEY
 if [ -n "$NB_KEY" ]; then
@@ -599,7 +641,7 @@ else
     print_info "NetBird пропущен"
 fi
 
-# =============== REST-SERVER ===============
+# =============== 12. REST-SERVER ===============
 print_step "Настройка Restic REST сервера"
 
 if [ ! -f "/var/lib/rest-server/.htpasswd" ]; then
@@ -607,7 +649,7 @@ if [ ! -f "/var/lib/rest-server/.htpasswd" ]; then
     echo "$REST_PASS" | sudo tee /var/lib/rest-server/.restic_pass > /dev/null
     sudo htpasswd -B -b -c /var/lib/rest-server/.htpasswd restic "$REST_PASS" >/dev/null 2>&1
     sudo chmod 600 /var/lib/rest-server/.htpasswd /var/lib/rest-server/.restic_pass
-    print_info "Пароль restic сохранён в /var/lib/rest-server/.restic_pass"
+    print_info "Пароль restic: $REST_PASS (сохранён в /var/lib/rest-server/.restic_pass)"
 fi
 
 step "Создание Quadlet файла" "
@@ -641,9 +683,9 @@ step "Запуск rest-server" "
 "
 
 print_success "Restic REST сервер запущен"
-print_info "Доступ: http://$SERVER_IP:8000 (user: restic)"
+print_info "Доступ: http://$SERVER_IP:8000 (user: restic / пароль в /var/lib/rest-server/.restic_pass)"
 
-# =============== PASSBOLT ===============
+# =============== 13. PASSBOLT ===============
 print_step "Настройка Passbolt"
 
 step "Создание директорий" "
@@ -668,7 +710,6 @@ step "Генерация JWT ключа" "
     sudo chmod 600 /var/lib/passbolt/jwt/jwt.key
 "
 
-# Получение fingerprint GPG
 GPG_FINGERPRINT=$(sudo gpg --homedir /var/lib/passbolt/gpg --fingerprint 2>/dev/null | grep -oE '[0-9A-F]{40}' | head -1)
 PASSBOLT_DB_PASS=$(openssl rand -base64 24)
 
@@ -724,13 +765,24 @@ print_info "Для настройки: http://$SERVER_IP:8080"
 print_info "После настройки NPM: https://passbolt.lab"
 print_info "Пароль БД: $PASSBOLT_DB_PASS (сохрани!)"
 
-# =============== BACKREST ===============
+# =============== 14. BACKREST ===============
 print_step "Настройка Backrest"
 
 step "Создание директорий" "
     sudo mkdir -p /var/lib/backrest/{data,config,cache}
     sudo chown -R 1000:1000 /var/lib/backrest 2>/dev/null
 "
+
+if [ -f "/var/lib/rest-server/.restic_pass" ]; then
+    RESTIC_PASS=$(sudo cat /var/lib/rest-server/.restic_pass)
+    step "Создание конфига restic" "
+        sudo tee /var/lib/backrest/config/restic.env > /dev/null <<EOF
+RESTIC_REPOSITORY=rest:http://restic:$RESTIC_PASS@localhost:8000/windows-backup
+RESTIC_PASSWORD=$RESTIC_PASS
+EOF
+        sudo chmod 600 /var/lib/backrest/config/restic.env
+    "
+fi
 
 step "Создание Quadlet файла" "
     sudo tee \"$QUADLET_SYSTEM_DIR/backrest.container\" > /dev/null <<EOF
@@ -772,50 +824,118 @@ print_success "Backrest запущен"
 print_info "Для настройки: http://$SERVER_IP:9898"
 print_info "После настройки NPM: https://backup.lab"
 
-# =============== SECRETCTL ===============
-print_step "Настройка secretctl (API-ключи)"
+# =============== 15. FAUCET (MCP SERVER) ===============
+print_step "Настройка Faucet"
 
-step "Установка secretctl" "
-    export PATH=$PATH:/usr/local/go/bin
-    go install github.com/forest6511/secretctl@latest 2>/dev/null
-    sudo ln -sf ~/go/bin/secretctl /usr/local/bin/
+step "Скачивание бинарника" "
+    wget -qO /tmp/faucet https://github.com/faucetdb/faucet/releases/latest/download/faucet-linux-amd64
+    chmod +x /tmp/faucet
+    sudo mv /tmp/faucet /usr/local/bin/faucet
 "
 
-step "Инициализация хранилища" "
-    secretctl init <<< \"$(openssl rand -base64 32)\" 2>/dev/null
-"
+FAUCET_PASS=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
 
-step "Создание Web UI сервиса" "
-    mkdir -p ~/.config/systemd/user
-    cat > ~/.config/systemd/user/secretctl-web.service <<EOF
-[Unit]
-Description=secretctl Web Interface
-After=network.target
+step "Создание конфига" "
+    cat > \"$FAUCET_DIR/config/faucet.yaml\" <<EOF
+database:
+  driver: sqlite
+  dsn: $FAUCET_DIR/data/faucet.db
 
-[Service]
-Type=simple
-ExecStart=/home/$CURRENT_USER/go/bin/secretctl web --port 8082 --bind 127.0.0.1
-Restart=always
-
-[Install]
-WantedBy=default.target
+auth:
+  enabled: true
+  jwt_secret: $(openssl rand -base64 32)
+  
+admin:
+  enabled: true
+  users:
+    - username: admin
+      password: $FAUCET_PASS
 EOF
 "
 
-step "Запуск Web UI" "
-    systemctl --user daemon-reload
-    systemctl --user enable --now secretctl-web.service
+step "Создание таблицы ключей" "
+    cat > \"$FAUCET_DIR/config/init.sql\" <<EOF
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service TEXT UNIQUE NOT NULL,
+    key_value TEXT NOT NULL,
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    tags TEXT
+);
+CREATE INDEX idx_api_keys_service ON api_keys(service);
+EOF
+    cd \"$FAUCET_DIR\"
+    faucet db exec \"\$(cat config/init.sql)\" 2>/dev/null || true
 "
 
-print_success "secretctl установлен"
-print_info "Web UI: http://$SERVER_IP:8082 (после настройки NPM: https://keys.lab)"
-print_info "Windows GUI: https://github.com/forest6511/secretctl/releases"
+step "Создание MCP конфига" "
+    cat > \"$FAUCET_DIR/config/mcp.yaml\" <<EOF
+tools:
+  - name: get_api_key
+    description: Get API key for a service
+    handler: |
+      function(args) {
+        const result = db.query(
+          'SELECT key_value FROM api_keys WHERE service = ?',
+          [args.service]
+        );
+        return result[0]?.key_value || null;
+      }
+  
+  - name: list_services
+    description: List all services that have API keys
+    handler: |
+      function() {
+        const result = db.query(
+          'SELECT service, notes, tags FROM api_keys ORDER BY service'
+        );
+        return result;
+      }
+EOF
+"
 
-# =============== NGINX PROXY MANAGER ===============
+step "Создание Quadlet файла" "
+    sudo tee \"$QUADLET_SYSTEM_DIR/faucet.container\" > /dev/null <<EOF
+[Unit]
+Description=Faucet MCP Server with GUI
+After=network-online.target
+
+[Container]
+Image=docker.io/faucetdb/faucet:latest
+ContainerName=faucet
+Volume=$FAUCET_DIR/data:/data:Z
+Volume=$FAUCET_DIR/config:/config:Z
+PublishPort=8082:8080
+PublishPort=8083:8081
+Environment=FAUCET_CONFIG=/config/faucet.yaml
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo chmod 644 \"$QUADLET_SYSTEM_DIR/faucet.container\"
+"
+
+step "Запуск Faucet" "
+    sudo systemctl daemon-reload
+    sudo systemctl start faucet.service
+    sleep 5
+"
+
+# Добавляем тестовый ключ
+faucet db exec "INSERT OR IGNORE INTO api_keys (service, key_value, notes, tags) VALUES ('OPENAI_API_KEY', 'sk-placeholder', 'Replace with your actual key', 'ai,test');" 2>/dev/null || true
+
+print_success "Faucet установлен"
+print_info "Admin UI: http://$SERVER_IP:8082 (логин: admin / пароль: $FAUCET_PASS)"
+print_info "MCP endpoint: http://$SERVER_IP:8083/mcp"
+print_info "После настройки NPM: https://keys.lab"
+
+# =============== 16. NGINX PROXY MANAGER ===============
 print_step "Настройка Nginx Proxy Manager"
-
-NPM_DIR="$INFRA_DIR/nginx-proxy-manager"
-mkdir -p "$NPM_DIR"/{data,letsencrypt}
 
 step "Создание Quadlet файла" "
     sudo tee \"$QUADLET_SYSTEM_DIR/nginx-proxy-manager.container\" > /dev/null <<EOF
@@ -853,7 +973,7 @@ print_success "Nginx Proxy Manager запущен"
 print_info "Admin UI: http://$SERVER_IP:81 (admin@example.com / changeme)"
 print_info "После настройки NPM все сервисы станут доступны по доменам .lab с HTTPS"
 
-# =============== HOMEPAGE ===============
+# =============== 17. HOMEPAGE ===============
 print_step "Настройка Homepage (красивый дашборд)"
 
 echo ""
@@ -909,6 +1029,11 @@ Infrastructure:
       href: https://passbolt.lab
       description: \"Менеджер паролей\"
       container: passbolt
+  - Faucet:
+      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/faucet.png
+      href: https://keys.lab
+      description: \"API-ключи для AI (MCP + GUI)\"
+      container: faucet
   - Backrest:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
       href: https://backup.lab
@@ -931,11 +1056,6 @@ Windows Clients:
       href: https://pkgs.netbird.io/windows
       description: \"Для доступа из любой точки\"
       subtitle: \"Без VPN не попадёшь домой\"
-  - secretctl Desktop:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/key.png
-      href: https://github.com/forest6511/secretctl/releases
-      description: \"GUI для API-ключей\"
-      subtitle: \"Хранилище на сервере ~/.secretctl/vault.db\"
   - Bitwarden Desktop:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/bitwarden.png
       href: https://bitwarden.com/download/
@@ -958,10 +1078,6 @@ Administration:
       href: https://app.netbird.io
       description: \"VPN управление\"
       container: netbird
-  - secretctl:
-      icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/key.png
-      href: https://keys.lab
-      description: \"API-ключи (Web UI)\"
   - Restic REST:
       icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/restic.png
       href: http://192.168.1.8:8000
@@ -1010,13 +1126,13 @@ print_success "Homepage запущен"
 print_info "Для настройки: http://$SERVER_IP:3001"
 print_info "После настройки NPM: https://home.lab"
 
-# =============== ФИНАЛЬНЫЙ ВЫВОД ===============
-print_header "🚀 ИНФРАСТРУКТУРА ГОТОВА К НАСТРОЙКЕ"
+# =============== 18. ФИНАЛЬНЫЙ ВЫВОД ===============
+print_header "🚀 ИНФРАСТРУКТУРА ПОЛНОСТЬЮ ГОТОВА"
 
 cat <<EOF
 
 ${NEON_GREEN}╔══════════════════════════════════════════════════════════╗${RESET}
-${NEON_GREEN}║          ДОСТУП ДЛЯ ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ             ║${RESET}
+${NEON_GREEN}║         🔌 ДОСТУП ДЛЯ ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ         ║${RESET}
 ${NEON_GREEN}╚══════════════════════════════════════════════════════════╝${RESET}
 
 ${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
@@ -1024,8 +1140,9 @@ ${NEON_CYAN}🏠 ДАШБОРД И УПРАВЛЕНИЕ${RESET}
   ${NEON_GREEN}●${RESET} Nginx Proxy Manager: ${NEON_CYAN}http://$SERVER_IP:81${RESET} (admin@example.com / changeme)
 
 ${NEON_CYAN}🔐 МЕНЕДЖЕРЫ СЕКРЕТОВ${RESET}
-  ${NEON_GREEN}●${RESET} Passbolt:            ${NEON_CYAN}http://$SERVER_IP:8080${RESET}
-  ${NEON_GREEN}●${RESET} secretctl Web UI:    ${NEON_CYAN}http://$SERVER_IP:8082${RESET}
+  ${NEON_GREEN}●${RESET} Passbolt:            ${NEON_CYAN}http://$SERVER_IP:8080${RESET} (пароли людей)
+  ${NEON_GREEN}●${RESET} Faucet:              ${NEON_CYAN}http://$SERVER_IP:8082${RESET} (API-ключи для AI)
+  ${MUTED_GRAY}  └─ Логин: admin / Пароль: ${NEON_CYAN}$FAUCET_PASS${RESET}
 
 ${NEON_CYAN}📦 РАЗРАБОТКА И БЭКАПЫ${RESET}
   ${NEON_GREEN}●${RESET} Gitea:               ${NEON_CYAN}http://$SERVER_IP:3000${RESET}
@@ -1035,23 +1152,22 @@ ${NEON_CYAN}📦 РАЗРАБОТКА И БЭКАПЫ${RESET}
 ${NEON_CYAN}🎬 МЕДИА${RESET}
   ${NEON_GREEN}●${RESET} TorrServer:          ${NEON_CYAN}http://$SERVER_IP:8090${RESET}
 
-${NEON_CYAN}🪟 WINDOWS КЛИЕНТЫ (установи после настройки VPN)${RESET}
+${NEON_CYAN}🪟 WINDOWS КЛИЕНТЫ${RESET}
   ${NEON_GREEN}●${RESET} NetBird:     ${NEON_CYAN}https://pkgs.netbird.io/windows${RESET}
-  ${NEON_GREEN}●${RESET} secretctl:   ${NEON_CYAN}https://github.com/forest6511/secretctl/releases${RESET}
   ${NEON_GREEN}●${RESET} Bitwarden:   ${NEON_CYAN}https://bitwarden.com/download/${RESET}
   ${NEON_GREEN}●${RESET} Restic:      ${NEON_CYAN}https://github.com/restic/restic/releases${RESET}
 
 ${NEON_BLUE}📋 СЛЕДУЮЩИЕ ШАГИ${RESET}
   ${NEON_YELLOW}1.${RESET} Зайди в Nginx Proxy Manager (http://$SERVER_IP:81)
-  ${NEON_YELLOW}2.${RESET} Добавь proxy hosts для всех доменов (passbolt.lab, git.lab и т.д.)
+  ${NEON_YELLOW}2.${RESET} Добавь proxy hosts для всех доменов (passbolt.lab, git.lab, keys.lab и т.д.)
   ${NEON_YELLOW}3.${RESET} Включи SSL (сертификаты уже созданы в $CERT_DIR)
-  ${NEON_YELLOW}4.${RESET} После этого сервисы станут доступны по HTTPS доменам
+  ${NEON_YELLOW}4.${RESET} Настрой Passbolt и Faucet через их веб-интерфейсы
 
 ${NEON_GREEN}🎉 УПРАВЛЕНИЕ: ${NEON_CYAN}infra status${RESET}
 ${NEON_GREEN}📋 ЛОГИ:       ${NEON_CYAN}infra logs <service>${RESET}
 EOF
 
-# =============== САМОУДАЛЕНИЕ ===============
+# =============== 19. САМОУДАЛЕНИЕ ===============
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 if [ -f "$SCRIPT_PATH" ] && [ "$SCRIPT_PATH" != "$BIN_DIR/infra" ] && [ "$SCRIPT_PATH" != "/usr/local/bin/infra" ]; then
     rm -f "$SCRIPT_PATH"
