@@ -1,7 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 # =============================================================================
-# INFRASTRUCTURE v12.0.0 (ФИНАЛЬНАЯ QUADLET EDITION)
+# INFRASTRUCTURE v12.0.1 (ИСПРАВЛЕННАЯ QUADLET EDITION)
 # =============================================================================
 # Полноценная домашняя инфраструктура на Ubuntu Server 24.04
 # ВСЕ СЕРВИСЫ УПРАВЛЯЮТСЯ ЧЕРЕЗ QUADLET
@@ -90,7 +90,7 @@ if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
     exit 1
 fi
 
-print_header "🚀 INFRASTRUCTURE v12.0.0 (QUADLET EDITION)"
+print_header "🚀 INFRASTRUCTURE v12.0.1 (QUADLET EDITION)"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
 # =============== 4. ДИРЕКТОРИИ ===============
@@ -134,7 +134,7 @@ done
 
 for dir in "${SYSTEM_DIRS[@]}"; do
     sudo mkdir -p "$dir"
-    sudo chown "$CURRENT_USER:$CURRENT_USER" "$dir" 2>/dev/null || true
+    # Не меняем владельца — оставляем root, :U в Quadlet подстроит права
 done
 
 print_success "Директории созданы"
@@ -253,6 +253,7 @@ EOF
 
     touch "$INFRA_DIR/.bootstrap_done"
     print_success "Система настроена"
+    print_warning "Для применения настроек subuid/subgid выйдите из сессии и зайдите заново (или выполните 'newgrp')"
 else
     print_info "Bootstrap уже выполнен"
 fi
@@ -359,7 +360,7 @@ format_status() {
 status_cmd() {
     clear
     echo -e "${NEON_CYAN}╔══════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${NEON_CYAN}║${RESET} ${BOLD}${SOFT_WHITE}INFRA STATUS v12.0.0 (QUADLET)${RESET}                     ${NEON_CYAN}║${RESET}"
+    echo -e "${NEON_CYAN}║${RESET} ${BOLD}${SOFT_WHITE}INFRA STATUS v12.0.1 (QUADLET)${RESET}                     ${NEON_CYAN}║${RESET}"
     echo -e "${NEON_CYAN}╚══════════════════════════════════════════════════════════╝${RESET}"
 
     declare -A services=(
@@ -558,7 +559,7 @@ Wants=podman-auto-update.service
 [Container]
 Label=io.containers.autoupdate=registry
 Image=ghcr.io/yourok/torrserver:latest
-Volume=$CURRENT_HOME/infra/volumes/torrserver:/app/z:Z
+Volume=$CURRENT_HOME/infra/volumes/torrserver:/app:U
 PublishPort=8090:8090
 # Traefik labels
 Label=traefik.enable=true
@@ -572,8 +573,6 @@ Label=traefik.http.services.torrserver.loadbalancer.server.port=8090
 
 [Service]
 Restart=always
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=default.target
@@ -583,6 +582,10 @@ chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/torrserver.container"
 systemctl --user daemon-reload
 systemctl --user enable --now torrserver.service
 sleep 3
+if ! systemctl --user is-active --quiet torrserver.service; then
+    print_error "TorrServer не запустился. Логи:"
+    journalctl --user -u torrserver.service --no-pager -n 20
+fi
 print_success "TorrServer запущен через Quadlet"
 print_url "https://torrent.lab (после настройки Traefik и hosts)"
 
@@ -598,7 +601,7 @@ Wants=podman-auto-update.service
 [Container]
 Label=io.containers.autoupdate=registry
 Image=docker.io/gitea/gitea:latest
-Volume=$CURRENT_HOME/infra/volumes/gitea:/data:Z
+Volume=$CURRENT_HOME/infra/volumes/gitea:/data:U
 PublishPort=3000:3000
 PublishPort=2222:22
 Environment=GITEA__server__ROOT_URL=https://git.lab
@@ -619,8 +622,6 @@ Label=traefik.http.services.gitea.loadbalancer.server.port=3000
 [Service]
 Restart=always
 TimeoutStopSec=60
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=default.target
@@ -629,6 +630,10 @@ EOF
 chown $CURRENT_USER:$CURRENT_USER "$QUADLET_USER_DIR/gitea.container"
 systemctl --user daemon-reload
 systemctl --user enable --now gitea.service
+if ! systemctl --user is-active --quiet gitea.service; then
+    print_error "Gitea не запустился. Логи:"
+    journalctl --user -u gitea.service --no-pager -n 20
+fi
 print_success "Gitea запущена через Quadlet"
 print_url "https://git.lab (после настройки Traefik и hosts)"
 
@@ -659,8 +664,8 @@ Wants=podman-auto-update.service
 [Container]
 Image=docker.io/gitea/act_runner:nightly
 ContainerName=gitea-runner
-Volume=/var/run/docker.sock:/var/run/docker.sock:Z
-Volume=/var/lib/gitea-runner:/data:Z
+Volume=/var/run/docker.sock:/var/run/docker.sock:U
+Volume=/var/lib/gitea-runner:/data:U
 Environment=GITEA_INSTANCE_URL=http://$SERVER_IP:3000
 Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
 Environment=GITEA_RUNNER_NAME=runner-$(hostname | cut -d. -f1)
@@ -670,8 +675,6 @@ AddDevice=/dev/fuse
 [Service]
 Restart=always
 TimeoutStopSec=60
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -680,6 +683,10 @@ EOF
         sudo chmod 644 "$QUADLET_SYSTEM_DIR/gitea-runner.container"
         sudo systemctl daemon-reload
         sudo systemctl enable --now gitea-runner.service
+        if ! sudo systemctl is-active --quiet gitea-runner.service; then
+            print_error "Gitea Runner не запустился. Логи:"
+            sudo journalctl -u gitea-runner.service --no-pager -n 20
+        fi
         print_success "Gitea Runner запущен через Quadlet"
     fi
 else
@@ -710,7 +717,7 @@ Image=docker.io/netbirdio/netbird:rootless-latest
 ContainerName=netbird
 Network=host
 AddDevice=/dev/net/tun
-Volume=/var/lib/netbird:/etc/netbird:Z
+Volume=/var/lib/netbird:/etc/netbird:U
 Environment=NB_SETUP_KEY=$NB_KEY
 Environment=NB_MANAGEMENT_URL=https://api.netbird.io:443
 SecurityLabelDisable=true
@@ -718,8 +725,6 @@ AddCapability=ALL
 
 [Service]
 Restart=always
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -728,6 +733,10 @@ EOF
     sudo chmod 644 "$QUADLET_SYSTEM_DIR/netbird.container"
     sudo systemctl daemon-reload
     sudo systemctl enable --now netbird.service
+    if ! sudo systemctl is-active --quiet netbird.service; then
+        print_error "NetBird не запустился. Логи:"
+        sudo journalctl -u netbird.service --no-pager -n 20
+    fi
     print_success "NetBird запущен через Quadlet (rootless-latest)"
 else
     print_info "NetBird пропущен"
@@ -753,14 +762,12 @@ Wants=podman-auto-update.service
 [Container]
 Image=docker.io/restic/rest-server:latest
 ContainerName=rest-server
-Volume=/var/lib/rest-server:/data:Z
+Volume=/var/lib/rest-server:/data:U
 PublishPort=8000:8000
 Exec=rest-server --path /data --htpasswd-file /data/.htpasswd --append-only --listen :8000
 
 [Service]
 Restart=always
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -769,6 +776,10 @@ EOF
 sudo chmod 644 "$QUADLET_SYSTEM_DIR/rest-server.container"
 sudo systemctl daemon-reload
 sudo systemctl enable --now rest-server.service
+if ! sudo systemctl is-active --quiet rest-server.service; then
+    print_error "Restic REST сервер не запустился. Логи:"
+    sudo journalctl -u rest-server.service --no-pager -n 20
+fi
 print_success "Restic REST сервер запущен через Quadlet"
 print_url "http://$SERVER_IP:8000"
 
@@ -795,10 +806,10 @@ Wants=podman-auto-update.service
 [Container]
 Image=ghcr.io/garethgeorge/backrest:latest
 ContainerName=backrest
-Volume=/var/lib/backrest/data:/data:Z
-Volume=/var/lib/backrest/config:/config:Z
-Volume=/var/lib/backrest/cache:/cache:Z
-Volume=$VOLUMES_DIR:/userdata:ro,Z
+Volume=/var/lib/backrest/data:/data:U
+Volume=/var/lib/backrest/config:/config:U
+Volume=/var/lib/backrest/cache:/cache:U
+Volume=$VOLUMES_DIR:/userdata:ro,U
 Environment=BACKREST_DATA=/data
 Environment=BACKREST_CONFIG=/config/config.json
 Environment=XDG_CACHE_HOME=/cache
@@ -816,8 +827,6 @@ Label=traefik.http.services.backrest.loadbalancer.server.port=9898
 
 [Service]
 Restart=always
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -826,6 +835,10 @@ EOF
 sudo chmod 644 "$QUADLET_SYSTEM_DIR/backrest.container"
 sudo systemctl daemon-reload
 sudo systemctl enable --now backrest.service
+if ! sudo systemctl is-active --quiet backrest.service; then
+    print_error "Backrest не запустился. Логи:"
+    sudo journalctl -u backrest.service --no-pager -n 20
+fi
 print_success "Backrest запущен через Quadlet"
 print_url "https://backup.lab (после настройки Traefik и hosts)"
 
@@ -856,7 +869,7 @@ admin:
       password: ${FAUCET_PASS}
 EOF
 
-# Права доступа (ВАЖНО для избежания readonly database)
+# Права доступа
 chmod 755 "$FAUCET_DIR"
 chmod 755 "$FAUCET_DIR/config"
 chmod 644 "$FAUCET_DIR/config/faucet.yaml"
@@ -876,8 +889,8 @@ Wants=podman-auto-update.service
 [Container]
 Image=docker.io/faucetdb/faucet:latest
 ContainerName=faucet
-Volume=$FAUCET_DIR/data:/data:Z
-Volume=$FAUCET_DIR/config:/config:Z
+Volume=$FAUCET_DIR/data:/data:U
+Volume=$FAUCET_DIR/config:/config:U
 PublishPort=8082:8080
 Environment=FAUCET_CONFIG=/config/faucet.yaml
 User=$CURRENT_UID:$CURRENT_UID
@@ -893,8 +906,6 @@ Label=traefik.http.services.faucet.loadbalancer.server.port=8080
 
 [Service]
 Restart=always
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -903,6 +914,10 @@ EOF
 sudo chmod 644 "$QUADLET_SYSTEM_DIR/faucet.container"
 sudo systemctl daemon-reload
 sudo systemctl enable --now faucet.service
+if ! sudo systemctl is-active --quiet faucet.service; then
+    print_error "Faucet не запустился. Логи:"
+    sudo journalctl -u faucet.service --no-pager -n 20
+fi
 
 print_success "Faucet запущен через Quadlet"
 print_info "Логин: admin / Пароль: $FAUCET_PASS"
@@ -996,10 +1011,10 @@ Wants=podman-auto-update.service
 [Container]
 Image=docker.io/traefik:latest
 ContainerName=traefik
-Volume=$TRAEFIK_DIR/config/traefik.yml:/etc/traefik/traefik.yml:Z
-Volume=$TRAEFIK_DIR/config/dynamic.yml:/etc/traefik/dynamic.yml:Z
-Volume=$CERT_DIR:/etc/traefik/certs:ro,Z
-Volume=/var/run/docker.sock:/var/run/docker.sock:ro,Z
+Volume=$TRAEFIK_DIR/config/traefik.yml:/etc/traefik/traefik.yml:U
+Volume=$TRAEFIK_DIR/config/dynamic.yml:/etc/traefik/dynamic.yml:U
+Volume=$CERT_DIR:/etc/traefik/certs:ro,U
+Volume=/var/run/docker.sock:/var/run/docker.sock:ro,U
 PublishPort=80:80
 PublishPort=443:443
 PublishPort=8080:8080
@@ -1011,8 +1026,6 @@ Label=traefik.http.routers.dashboard.middlewares=auth-basic@file
 
 [Service]
 Restart=always
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -1021,6 +1034,10 @@ EOF
 sudo chmod 644 "$QUADLET_SYSTEM_DIR/traefik.container"
 sudo systemctl daemon-reload
 sudo systemctl enable --now traefik.service
+if ! sudo systemctl is-active --quiet traefik.service; then
+    print_error "Traefik не запустился. Логи:"
+    sudo journalctl -u traefik.service --no-pager -n 20
+fi
 
 print_success "Traefik запущен через Quadlet"
 print_url "http://$SERVER_IP:8080 (дашборд)"
@@ -1039,7 +1056,7 @@ Wants=podman-auto-update.service
 [Container]
 Image=ghcr.io/keeweb/keeweb:latest
 ContainerName=keeweb
-Volume=$KEEWEB_DIR/data:/config:Z
+Volume=$KEEWEB_DIR/data:/config:U
 PublishPort=8080:80
 # Traefik labels
 Label=traefik.enable=true
@@ -1053,8 +1070,6 @@ Label=traefik.http.services.keeweb.loadbalancer.server.port=80
 
 [Service]
 Restart=always
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -1063,6 +1078,10 @@ EOF
 sudo chmod 644 "$QUADLET_SYSTEM_DIR/keeweb.container"
 sudo systemctl daemon-reload
 sudo systemctl enable --now keeweb.service
+if ! sudo systemctl is-active --quiet keeweb.service; then
+    print_error "KeeWeb не запустился. Логи:"
+    sudo journalctl -u keeweb.service --no-pager -n 20
+fi
 
 print_success "KeeWeb запущен через Quadlet"
 print_url "http://$SERVER_IP:8080"
@@ -1199,8 +1218,8 @@ Wants=podman-auto-update.service
 Label=io.containers.autoupdate=registry
 Image=ghcr.io/gethomepage/homepage:latest
 ContainerName=homepage
-Volume=$HOMEPAGE_CONFIG_DIR:/app/config:ro,Z
-Volume=/var/run/docker.sock:/var/run/docker.sock:ro,Z
+Volume=$HOMEPAGE_CONFIG_DIR:/app/config:ro,U
+Volume=/var/run/docker.sock:/var/run/docker.sock:ro,U
 PublishPort=3001:3000
 Environment=HOMEPAGE_ALLOWED_HOSTS=$SERVER_IP:3001,localhost:3001,home.lab:3001
 # Traefik labels
@@ -1215,8 +1234,6 @@ Label=traefik.http.services.homepage.loadbalancer.server.port=3000
 
 [Service]
 Restart=always
-Type=notify
-NotifyAccess=all
 
 [Install]
 WantedBy=default.target
@@ -1227,10 +1244,11 @@ systemctl --user daemon-reload
 systemctl --user enable --now homepage.service
 
 sleep 5
-if journalctl --user -u homepage.service -n 20 --no-pager 2>&1 | grep -q "config"; then
-    print_success "Homepage запущен через Quadlet с конфигурацией"
+if ! systemctl --user is-active --quiet homepage.service; then
+    print_error "Homepage не запустился. Логи:"
+    journalctl --user -u homepage.service --no-pager -n 20
 else
-    print_warning "Проверьте логи: journalctl --user -u homepage.service -f"
+    print_success "Homepage запущен через Quadlet с конфигурацией"
 fi
 
 print_success "Homepage запущен через Quadlet"
@@ -1299,7 +1317,7 @@ EOF
 # Сохраняем все credentials
 cat > "$INFRA_DIR/credentials.txt" <<EOF
 # ========================================
-# INFRASTRUCTURE CREDENTIALS v12.0.0 (QUADLET)
+# INFRASTRUCTURE CREDENTIALS v12.0.1 (QUADLET)
 # Сгенерировано: $(date)
 # ========================================
 
