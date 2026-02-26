@@ -1,7 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 # =============================================================================
-# INFRASTRUCTURE v12.0.1 (ИСПРАВЛЕННАЯ QUADLET EDITION)
+# INFRASTRUCTURE v12.0.2 (ИСПРАВЛЕННАЯ QUADLET EDITION)
 # =============================================================================
 # Полноценная домашняя инфраструктура на Ubuntu Server 24.04
 # ВСЕ СЕРВИСЫ УПРАВЛЯЮТСЯ ЧЕРЕЗ QUADLET
@@ -90,7 +90,7 @@ if [ "$(id -u)" = "0" ] && [ -z "${SUDO_USER:-}" ]; then
     exit 1
 fi
 
-print_header "🚀 INFRASTRUCTURE v12.0.1 (QUADLET EDITION)"
+print_header "🚀 INFRASTRUCTURE v12.0.2 (QUADLET EDITION)"
 print_info "User: $CURRENT_USER | UID: $CURRENT_UID | IP: $SERVER_IP"
 
 # =============== 4. ДИРЕКТОРИИ ===============
@@ -134,7 +134,6 @@ done
 
 for dir in "${SYSTEM_DIRS[@]}"; do
     sudo mkdir -p "$dir"
-    # Не меняем владельца — оставляем root, :U в Quadlet подстроит права
 done
 
 print_success "Директории созданы"
@@ -181,6 +180,11 @@ if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
         if ! grep -q '$CURRENT_USER:' /etc/subuid 2>/dev/null; then
             usermod --add-subuids 100000-165535 --add-subgids 100000-165535 '$CURRENT_USER' 2>/dev/null || true
         fi
+
+        # Создаем runtime директорию для пользователя (КРИТИЧЕСКИ ВАЖНО!)
+        mkdir -p /run/user/$CURRENT_UID
+        chown $CURRENT_USER:$CURRENT_USER /run/user/$CURRENT_UID
+        chmod 700 /run/user/$CURRENT_UID
 
         # UFW
         sed -i 's/DEFAULT_FORWARD_POLICY=\"DROP\"/DEFAULT_FORWARD_POLICY=\"ACCEPT\"/' /etc/default/ufw 2>/dev/null
@@ -245,8 +249,11 @@ EOF
     sudo systemctl enable --now podman.socket >/dev/null 2>&1 || true
     sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || true
 
-    # Включаем автообновление для Quadlet
+    # Перезагружаем systemd пользователя, чтобы он подхватил новые настройки runtime директории
+    systemctl --user daemon-reload
     systemctl --user enable podman-auto-update.timer 2>/dev/null || true
+
+    # Включаем автообновление для Quadlet
     systemctl --user start podman-auto-update.timer 2>/dev/null || true
     sudo systemctl enable podman-auto-update.timer 2>/dev/null || true
     sudo systemctl start podman-auto-update.timer 2>/dev/null || true
@@ -360,7 +367,7 @@ format_status() {
 status_cmd() {
     clear
     echo -e "${NEON_CYAN}╔══════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${NEON_CYAN}║${RESET} ${BOLD}${SOFT_WHITE}INFRA STATUS v12.0.1 (QUADLET)${RESET}                     ${NEON_CYAN}║${RESET}"
+    echo -e "${NEON_CYAN}║${RESET} ${BOLD}${SOFT_WHITE}INFRA STATUS v12.0.2 (QUADLET)${RESET}                     ${NEON_CYAN}║${RESET}"
     echo -e "${NEON_CYAN}╚══════════════════════════════════════════════════════════╝${RESET}"
 
     declare -A services=(
@@ -559,7 +566,7 @@ Wants=podman-auto-update.service
 [Container]
 Label=io.containers.autoupdate=registry
 Image=ghcr.io/yourok/torrserver:latest
-Volume=$CURRENT_HOME/infra/volumes/torrserver:/app:U
+Volume=$CURRENT_HOME/infra/volumes/torrserver:/app
 PublishPort=8090:8090
 # Traefik labels
 Label=traefik.enable=true
@@ -601,7 +608,7 @@ Wants=podman-auto-update.service
 [Container]
 Label=io.containers.autoupdate=registry
 Image=docker.io/gitea/gitea:latest
-Volume=$CURRENT_HOME/infra/volumes/gitea:/data:U
+Volume=$CURRENT_HOME/infra/volumes/gitea:/data
 PublishPort=3000:3000
 PublishPort=2222:22
 Environment=GITEA__server__ROOT_URL=https://git.lab
@@ -664,8 +671,8 @@ Wants=podman-auto-update.service
 [Container]
 Image=docker.io/gitea/act_runner:nightly
 ContainerName=gitea-runner
-Volume=/var/run/docker.sock:/var/run/docker.sock:U
-Volume=/var/lib/gitea-runner:/data:U
+Volume=/var/run/docker.sock:/var/run/docker.sock
+Volume=/var/lib/gitea-runner:/data
 Environment=GITEA_INSTANCE_URL=http://$SERVER_IP:3000
 Environment=GITEA_RUNNER_REGISTRATION_TOKEN=$RUNNER_TOKEN
 Environment=GITEA_RUNNER_NAME=runner-$(hostname | cut -d. -f1)
@@ -717,7 +724,7 @@ Image=docker.io/netbirdio/netbird:rootless-latest
 ContainerName=netbird
 Network=host
 AddDevice=/dev/net/tun
-Volume=/var/lib/netbird:/etc/netbird:U
+Volume=/var/lib/netbird:/etc/netbird
 Environment=NB_SETUP_KEY=$NB_KEY
 Environment=NB_MANAGEMENT_URL=https://api.netbird.io:443
 SecurityLabelDisable=true
@@ -762,7 +769,7 @@ Wants=podman-auto-update.service
 [Container]
 Image=docker.io/restic/rest-server:latest
 ContainerName=rest-server
-Volume=/var/lib/rest-server:/data:U
+Volume=/var/lib/rest-server:/data
 PublishPort=8000:8000
 Exec=rest-server --path /data --htpasswd-file /data/.htpasswd --append-only --listen :8000
 
@@ -806,10 +813,10 @@ Wants=podman-auto-update.service
 [Container]
 Image=ghcr.io/garethgeorge/backrest:latest
 ContainerName=backrest
-Volume=/var/lib/backrest/data:/data:U
-Volume=/var/lib/backrest/config:/config:U
-Volume=/var/lib/backrest/cache:/cache:U
-Volume=$VOLUMES_DIR:/userdata:ro,U
+Volume=/var/lib/backrest/data:/data
+Volume=/var/lib/backrest/config:/config
+Volume=/var/lib/backrest/cache:/cache
+Volume=$VOLUMES_DIR:/userdata:ro
 Environment=BACKREST_DATA=/data
 Environment=BACKREST_CONFIG=/config/config.json
 Environment=XDG_CACHE_HOME=/cache
@@ -889,8 +896,8 @@ Wants=podman-auto-update.service
 [Container]
 Image=docker.io/faucetdb/faucet:latest
 ContainerName=faucet
-Volume=$FAUCET_DIR/data:/data:U
-Volume=$FAUCET_DIR/config:/config:U
+Volume=$FAUCET_DIR/data:/data
+Volume=$FAUCET_DIR/config:/config
 PublishPort=8082:8080
 Environment=FAUCET_CONFIG=/config/faucet.yaml
 User=$CURRENT_UID:$CURRENT_UID
@@ -1011,10 +1018,10 @@ Wants=podman-auto-update.service
 [Container]
 Image=docker.io/traefik:latest
 ContainerName=traefik
-Volume=$TRAEFIK_DIR/config/traefik.yml:/etc/traefik/traefik.yml:U
-Volume=$TRAEFIK_DIR/config/dynamic.yml:/etc/traefik/dynamic.yml:U
-Volume=$CERT_DIR:/etc/traefik/certs:ro,U
-Volume=/var/run/docker.sock:/var/run/docker.sock:ro,U
+Volume=$TRAEFIK_DIR/config/traefik.yml:/etc/traefik/traefik.yml
+Volume=$TRAEFIK_DIR/config/dynamic.yml:/etc/traefik/dynamic.yml
+Volume=$CERT_DIR:/etc/traefik/certs:ro
+Volume=/var/run/docker.sock:/var/run/docker.sock:ro
 PublishPort=80:80
 PublishPort=443:443
 PublishPort=8080:8080
@@ -1056,7 +1063,7 @@ Wants=podman-auto-update.service
 [Container]
 Image=ghcr.io/keeweb/keeweb:latest
 ContainerName=keeweb
-Volume=$KEEWEB_DIR/data:/config:U
+Volume=$KEEWEB_DIR/data:/config
 PublishPort=8080:80
 # Traefik labels
 Label=traefik.enable=true
@@ -1218,8 +1225,8 @@ Wants=podman-auto-update.service
 Label=io.containers.autoupdate=registry
 Image=ghcr.io/gethomepage/homepage:latest
 ContainerName=homepage
-Volume=$HOMEPAGE_CONFIG_DIR:/app/config:ro,U
-Volume=/var/run/docker.sock:/var/run/docker.sock:ro,U
+Volume=$HOMEPAGE_CONFIG_DIR:/app/config:ro
+Volume=/var/run/docker.sock:/var/run/docker.sock:ro
 PublishPort=3001:3000
 Environment=HOMEPAGE_ALLOWED_HOSTS=$SERVER_IP:3001,localhost:3001,home.lab:3001
 # Traefik labels
@@ -1317,7 +1324,7 @@ EOF
 # Сохраняем все credentials
 cat > "$INFRA_DIR/credentials.txt" <<EOF
 # ========================================
-# INFRASTRUCTURE CREDENTIALS v12.0.1 (QUADLET)
+# INFRASTRUCTURE CREDENTIALS v12.0.2 (QUADLET)
 # Сгенерировано: $(date)
 # ========================================
 
