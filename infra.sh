@@ -123,102 +123,7 @@ else
     sudo apt-get install -y podman podman-docker
 fi
 
-# =============== BOOTSTRAP ===============
-print_step "Подготовка системы"
-
-if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
-    print_info "Настройка системы..."
-
-    RAM_MB=$(free -m | awk '/^Mem:/ {print $2}')
-    SWAP_MB=$((RAM_MB * 2))
-    [ $SWAP_MB -gt 8192 ] && SWAP_MB=8192
-
-    sudo bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -qq >/dev/null 2>&1
-        apt-get upgrade -y -qq >/dev/null 2>&1 || true
-        apt-get install -y -qq uidmap slirp4netns fuse-overlayfs curl openssl ufw fail2ban >/dev/null 2>&1 || true
-
-        if [ ! -f /swapfile ] && [ \$(free | grep -c Swap) -eq 0 ] || [ \$(free | awk '/^Swap:/ {print \$2}') -eq 0 ]; then
-            fallocate -l ${SWAP_MB}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=${SWAP_MB} 2>/dev/null
-            chmod 600 /swapfile
-            mkswap /swapfile >/dev/null 2>&1
-            swapon /swapfile >/dev/null 2>&1
-            echo '/swapfile none swap sw 0 0' >> /etc/fstab
-            sysctl vm.swappiness=10 >/dev/null 2>&1
-            echo 'vm.swappiness=10' >> /etc/sysctl.conf
-        fi
-
-        if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
-            echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
-            echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
-            sysctl -p >/dev/null 2>&1
-        fi
-
-        if ! grep -q '$CURRENT_USER:' /etc/subuid 2>/dev/null; then
-            usermod --add-subuids 100000-165535 --add-subgids 100000-165535 '$CURRENT_USER' 2>/dev/null || true
-        fi
-
-        mkdir -p /run/user/$CURRENT_UID
-        chown $CURRENT_USER:$CURRENT_USER /run/user/$CURRENT_UID
-        chmod 700 /run/user/$CURRENT_UID
-
-        # UFW
-        ufw --force reset >/dev/null 2>&1
-        ufw default deny incoming >/dev/null 2>&1
-        ufw default allow outgoing >/dev/null 2>&1
-        ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1
-        ufw allow 3000/tcp comment 'Gitea HTTP' >/dev/null 2>&1
-        ufw allow 2222/tcp comment 'Gitea SSH' >/dev/null 2>&1
-        ufw allow 8090/tcp comment 'TorrServer' >/dev/null 2>&1
-        ufw allow 51820/udp comment 'WireGuard' >/dev/null 2>&1
-        ufw --force enable >/dev/null 2>&1
-
-        # fail2ban
-        cat > /etc/fail2ban/jail.local <<'EOFAIL'
-[DEFAULT]
-bantime = 1h
-findtime = 10m
-maxretry = 5
-backend = systemd
-[sshd]
-enabled = true
-port = ssh
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 3
-EOFAIL
-        systemctl restart fail2ban >/dev/null 2>&1 || true
-        systemctl enable fail2ban >/dev/null 2>&1 || true
-
-        # SSH hardening
-        if [ -d '$CURRENT_HOME/.ssh' ] && [ -n '\$(ls -A $CURRENT_HOME/.ssh/*.pub 2>/dev/null)' ]; then
-            sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-            sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-            sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-            systemctl restart sshd >/dev/null 2>&1 || true
-        else
-            echo 'SSH_KEYS_MISSING' > /tmp/ssh_status
-        fi
-    "
-
-    if [ -f /tmp/ssh_status ]; then
-        rm -f /tmp/ssh_status
-        print_warning "SSH ключи не найдены! Парольная аутентификация оставлена"
-        print_info "Добавьте ключ: ssh-copy-id user@$SERVER_IP"
-    else
-        print_success "SSH hardening применен"
-    fi
-
-    touch "$INFRA_DIR/.bootstrap_done"
-    print_success "Система настроена"
-else
-    print_info "Bootstrap уже выполнен"
-fi
-
-sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || true
-
-# =============== CLI (ПОЛНАЯ ВЕРСИЯ) ===============
+# =============== CLI ===============
 cat > "$BIN_DIR/infra" <<'ENDOFCLI'
 #!/bin/bash
 INFRA_DIR="$HOME/infra"
@@ -776,6 +681,101 @@ ENDOFCLI
 
 chmod +x "$BIN_DIR/infra"
 sudo ln -sf "$BIN_DIR/infra" /usr/local/bin/infra 2>/dev/null || true
+
+# =============== BOOTSTRAP ===============
+print_step "Подготовка системы"
+
+if [ ! -f "$INFRA_DIR/.bootstrap_done" ]; then
+    print_info "Настройка системы..."
+
+    RAM_MB=$(free -m | awk '/^Mem:/ {print $2}')
+    SWAP_MB=$((RAM_MB * 2))
+    [ $SWAP_MB -gt 8192 ] && SWAP_MB=8192
+
+    sudo bash -c "
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq >/dev/null 2>&1
+        apt-get upgrade -y -qq >/dev/null 2>&1 || true
+        apt-get install -y -qq uidmap slirp4netns fuse-overlayfs curl openssl ufw fail2ban >/dev/null 2>&1 || true
+
+        if [ ! -f /swapfile ] && [ \$(free | grep -c Swap) -eq 0 ] || [ \$(free | awk '/^Swap:/ {print \$2}') -eq 0 ]; then
+            fallocate -l ${SWAP_MB}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=${SWAP_MB} 2>/dev/null
+            chmod 600 /swapfile
+            mkswap /swapfile >/dev/null 2>&1
+            swapon /swapfile >/dev/null 2>&1
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            sysctl vm.swappiness=10 >/dev/null 2>&1
+            echo 'vm.swappiness=10' >> /etc/sysctl.conf
+        fi
+
+        if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
+            echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
+            echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
+            sysctl -p >/dev/null 2>&1
+        fi
+
+        if ! grep -q '$CURRENT_USER:' /etc/subuid 2>/dev/null; then
+            usermod --add-subuids 100000-165535 --add-subgids 100000-165535 '$CURRENT_USER' 2>/dev/null || true
+        fi
+
+        mkdir -p /run/user/$CURRENT_UID
+        chown $CURRENT_USER:$CURRENT_USER /run/user/$CURRENT_UID
+        chmod 700 /run/user/$CURRENT_UID
+
+        # UFW
+        ufw --force reset >/dev/null 2>&1
+        ufw default deny incoming >/dev/null 2>&1
+        ufw default allow outgoing >/dev/null 2>&1
+        ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1
+        ufw allow 3000/tcp comment 'Gitea HTTP' >/dev/null 2>&1
+        ufw allow 2222/tcp comment 'Gitea SSH' >/dev/null 2>&1
+        ufw allow 8090/tcp comment 'TorrServer' >/dev/null 2>&1
+        ufw allow 51820/udp comment 'WireGuard' >/dev/null 2>&1
+        ufw --force enable >/dev/null 2>&1
+
+        # fail2ban
+        cat > /etc/fail2ban/jail.local <<'EOFAIL'
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+backend = systemd
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+EOFAIL
+        systemctl restart fail2ban >/dev/null 2>&1 || true
+        systemctl enable fail2ban >/dev/null 2>&1 || true
+
+        # SSH hardening
+        if [ -d '$CURRENT_HOME/.ssh' ] && [ -n '\$(ls -A $CURRENT_HOME/.ssh/*.pub 2>/dev/null)' ]; then
+            sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+            sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+            sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+            systemctl restart sshd >/dev/null 2>&1 || true
+        else
+            echo 'SSH_KEYS_MISSING' > /tmp/ssh_status
+        fi
+    "
+
+    if [ -f /tmp/ssh_status ]; then
+        rm -f /tmp/ssh_status
+        print_warning "SSH ключи не найдены! Парольная аутентификация оставлена"
+        print_info "Добавьте ключ: ssh-copy-id user@$SERVER_IP"
+    else
+        print_success "SSH hardening применен"
+    fi
+
+    touch "$INFRA_DIR/.bootstrap_done"
+    print_success "Система настроена"
+else
+    print_info "Bootstrap уже выполнен"
+fi
+
+sudo loginctl enable-linger "$CURRENT_USER" 2>/dev/null || true
 
 # =============== PODMAN AUTO-UPDATE ===============
 print_step "Настройка авто-обновления"
