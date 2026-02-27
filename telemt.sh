@@ -94,7 +94,7 @@ download_telemt() {
     log_info "Ищем файл: $expected_pattern"
     
     # Получаем данные последнего релиза через GitHub API
-    local api_url="https://api.github.com/repos/telemt/telemm/releases/latest"
+    local api_url="https://api.github.com/repos/telemt/telemt/releases/latest"
     log_info "Запрос к API: $api_url"
     
     local release_data
