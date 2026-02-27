@@ -1,82 +1,120 @@
 #!/bin/bash
 #===============================================================================
-# Telemt MTProto Proxy Deployment Script for Ubuntu Server 24.04.4 LTS
+# MTProto Proxy + Telegram Bot Deployment Script for Ubuntu Server 24.04.4 LTS
+# Based on: MTG (https://github.com/9seconds/mtg)
+#           Telemt (https://github.com/telemt/telemt)
+#           Habr Article: https://habr.com/ru/articles/994934/
 #
-# Telemt - MTProxy на Rust + Tokio с продвинутым TLS Fronting
-# https://github.com/telemt/telemt
-#
-# Особенности:
-# - Полная маскировка под HTTPS (DPI видит настоящий TLS)
-# - Transparent TCP Splice для клиентов без секрета
-# - Мультипользовательский режим
-# - Минимум компонентов для максимальной приватности
+# Author: Auto-generated deployment script
+# Version: 1.0.0
+# License: MIT
 #===============================================================================
 
 set -euo pipefail
 
-# Colors
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-# Logging
-log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+# Logging functions
+log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Paths
-CONFIG_DIR="/etc/telemt"
+# Configuration variables
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="/etc/mtproto"
 QUADLET_DIR="/etc/containers/systemd"
-CONFIG_FILE="${CONFIG_DIR}/telemt.toml"
+DATA_DIR="/var/lib/mtproto"
 
-# Settings (can be overridden via environment)
-TELEMT_PORT="${TELEMT_PORT:-443}"
-TELEMT_SECRET="${TELEMT_SECRET:-}"
-TELEMT_DOMAIN="${TELEMT_DOMAIN:-}"
-TLS_MASK_DOMAIN="${TLS_MASK_DOMAIN:-www.microsoft.com}"
+# Default settings (can be overridden via environment or config file)
+MTG_VERSION="${MTG_VERSION:-2.1.4}"
+MTG_PORT="${MTG_PORT:-443}"
+MTG_DOMAIN="${MTG_DOMAIN:-}"  # Will be prompted if not set
+TELEGRAM_BOT_TOKEN="${TEGRAM_BOT_TOKEN:-}"
+TELEGRAM_ADMIN_ID="${TELEGRAM_ADMIN_ID:-}"
 
-# Optional: DuckDNS + ACME
-USE_DUCKDNS="${USE_DUCKDNS:-false}"
-DUCKDNS_DOMAIN="${DUCKDNS_DOMAIN:-}"
-DUCKDNS_TOKEN="${DUCKDNS_TOKEN:-}"
+# Fake TLS domains (popular sites for DPI evasion)
+FAKE_TLS_DOMAINS=(
+    "www.google.com"
+    "www.youtube.com"
+    "www.cloudflare.com"
+    "www.microsoft.com"
+    "www.amazon.com"
+    "www.apple.com"
+    "www.facebook.com"
+    "www.twitter.com"
+    "www.instagram.com"
+    "www.github.com"
+)
 
-#===============================================================================
-# Check root
-#===============================================================================
+#-------------------------------------------------------------------------------
+# Check if running as root
+#-------------------------------------------------------------------------------
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "Run as root: sudo $0"
+        log_error "This script must be run as root"
         exit 1
     fi
 }
 
-#===============================================================================
-# Install dependencies
-#===============================================================================
-install_deps() {
-    log_info "Updating system..."
-    apt-get update -qq
-
-    log_info "Installing packages..."
-    apt-get install -y -qq \
-        curl wget openssl jq podman crun fuse-overlayfs \
-        ca-certificates
-
-    log_ok "Dependencies installed"
+#-------------------------------------------------------------------------------
+# Detect system architecture
+#-------------------------------------------------------------------------------
+detect_arch() {
+    local arch
+    arch=$(uname -m)
+    case $arch in
+        x86_64)  echo "amd64" ;;
+        aarch64) echo "arm64" ;;
+        armv7l)  echo "arm" ;;
+        *)       log_error "Unsupported architecture: $arch"; exit 1 ;;
+    esac
 }
 
-#===============================================================================
-# Configure Podman
-#===============================================================================
+#-------------------------------------------------------------------------------
+# Install required packages
+#-------------------------------------------------------------------------------
+install_dependencies() {
+    log_info "Updating system packages..."
+    apt-get update -qq
+
+    log_info "Installing required packages..."
+    apt-get install -y -qq \
+        curl \
+        wget \
+        gnupg2 \
+        ca-certificates \
+        jq \
+        openssl \
+        git \
+        podman \
+        podman-compose \
+        crun \
+        fuse-overlayfs
+
+    log_success "Dependencies installed successfully"
+}
+
+#-------------------------------------------------------------------------------
+# Configure Podman for rootless mode (optional)
+#-------------------------------------------------------------------------------
 configure_podman() {
     log_info "Configuring Podman..."
 
-    mkdir -p /etc/containers
+    # Enable lingering for podman containers
+    mkdir -p /etc/systemd/system/podman.service.d
+    cat > /etc/systemd/system/podman.service.d/override.conf << 'EOF'
+[Service]
+TasksMax=infinity
+EOF
 
+    # Configure storage
+    mkdir -p /etc/containers
     cat > /etc/containers/storage.conf << 'EOF'
 [storage]
 driver = "overlay"
@@ -87,496 +125,751 @@ graphroot = "/var/lib/containers/storage"
 overlay.mountopt = "nodev,metacopy=on"
 EOF
 
+    # Reload systemd
+    systemctl daemon-reload
+
+    log_success "Podman configured successfully"
+}
+
+#-------------------------------------------------------------------------------
+# Install Quadlet (comes with newer podman versions)
+#-------------------------------------------------------------------------------
+install_quadlet() {
+    log_info "Setting up Quadlet for systemd integration..."
+
+    # Create Quadlet directory
     mkdir -p "${QUADLET_DIR}"
-    log_ok "Podman configured"
+
+    # Verify Quadlet is available
+    if command -v quadlet &> /dev/null; then
+        log_success "Quadlet is available"
+    else
+        log_info "Quadlet binary not found separately, using built-in Podman Quadlet"
+    fi
+
+    # Create directories for user quadlets
+    mkdir -p /root/.config/containers/systemd
 }
 
-#===============================================================================
-# Generate secret (32 hex chars = 16 bytes)
-#===============================================================================
+#-------------------------------------------------------------------------------
+# Generate secret key for MTProto
+#-------------------------------------------------------------------------------
 generate_secret() {
-    openssl rand -hex 16
+    log_info "Generating MTProto secret key..."
+
+    # Generate 32-byte hex secret
+    local secret
+    secret=$(openssl rand -hex 16)
+
+    echo "${secret}"
 }
 
-#===============================================================================
-# Get public IP
-#===============================================================================
-get_public_ip() {
-    curl -s --max-time 5 ifconfig.me 2>/dev/null || \
-    curl -s --max-time 5 icanhazip.com 2>/dev/null || \
-    echo "UNKNOWN"
-}
+#-------------------------------------------------------------------------------
+# Build MTG container image
+#-------------------------------------------------------------------------------
+build_mtg_image() {
+    log_info "Building MTG container image..."
 
-#===============================================================================
-# Setup DuckDNS (optional)
-#===============================================================================
-setup_duckdns() {
-    if [[ "${USE_DUCKDNS}" != "true" ]] || [[ -z "${DUCKDNS_DOMAIN}" ]] || [[ -z "${DUCKDNS_TOKEN}" ]]; then
-        return 0
-    fi
+    local arch
+    arch=$(detect_arch)
 
-    log_info "Setting up DuckDNS..."
+    # Create temporary build directory
+    local build_dir
+    build_dir=$(mktemp -d)
 
-    # Update DuckDNS
-    curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=$(get_public_ip)"
-
-    # Create update cron
-    cat > /etc/cron.d/duckdns << EOF
-*/5 * * * * root curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=\$(curl -s ifconfig.me)" > /dev/null 2>&1
-EOF
-
-    chmod 644 /etc/cron.d/duckdns
-
-    # Set domain
-    TELEMT_DOMAIN="${DUCKDNS_DOMAIN}.duckdns.org"
-
-    log_ok "DuckDNS configured: ${TELEMT_DOMAIN}"
-}
-
-#===============================================================================
-# Setup ACME certificates (optional, for additional HTTPS services)
-#===============================================================================
-setup_acme() {
-    if [[ "${USE_DUCKDNS}" != "true" ]] || [[ -z "${TELEMT_DOMAIN}" ]]; then
-        return 0
-    fi
-
-    log_info "Installing acme.sh..."
-
-    # Install acme.sh
-    curl -sL https://get.acme.sh | sh -s email="admin@${TELEMT_DOMAIN}"
-
-    # Wait for DNS propagation
-    log_info "Waiting for DNS propagation..."
-    sleep 30
-
-    # Issue certificate using DuckDNS API
-    export DuckDNS_Token="${DUCKDNS_TOKEN}"
-    ~/.acme.sh/acme.sh --issue --dns dns_duckdns -d "${TELEMT_DOMAIN}"
-
-    # Install certificate
-    mkdir -p /etc/telemt/certs
-    ~/.acme.sh/acme.sh --install-cert -d "${TELEMT_DOMAIN}" \
-        --key-file       /etc/telemt/certs/key.pem \
-        --fullchain-file /etc/telemt/certs/cert.pem \
-        --reloadcmd      "echo 'Cert renewed'"
-
-    log_ok "SSL certificate installed"
-}
-
-#===============================================================================
-# Build Telemt container image
-#===============================================================================
-build_telemt_image() {
-    log_info "Building Telemt container image..."
-
-    local tmpdir
-    tmpdir=$(mktemp -d)
-
-    cat > "${tmpdir}/Containerfile" << 'EOF'
+    # Create Containerfile
+    cat > "${build_dir}/Containerfile" << 'CONTAINERFILE'
 FROM docker.io/library/alpine:3.19
-
-LABEL maintainer="Telemt MTProxy"
-LABEL description="MTProxy with advanced TLS fronting"
 
 # Install dependencies
 RUN apk add --no-cache ca-certificates tzdata
 
-# Create user
-RUN addgroup -g 1000 telemt && \
-    adduser -u 1000 -G telemt -s /bin/sh -D telemt
+# Create non-root user
+RUN addgroup -g 1000 mtg && \
+    adduser -u 1000 -G mtg -s /bin/sh -D mtg
 
-# Download Telemt
+# Download and install MTG
+ARG MTG_VERSION
 ARG TARGETARCH
-RUN arch=$(echo ${TARGETARCH} | sed 's/amd64/x86_64/;s/arm64/aarch64/') && \
-    libc=$(ldd --version 2>&1 | grep -iq musl && echo musl || echo gnu) && \
-    wget -q "https://github.com/telemt/telemt/releases/latest/download/telemt-${arch}-linux-${libc}.tar.gz" \
-    -O /tmp/telemt.tar.gz && \
-    tar -xzf /tmp/telemt.tar.gz -C /usr/local/bin && \
-    chmod +x /usr/local/bin/telemt && \
-    rm /tmp/telemt.tar.gz
+RUN wget -q "https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/mtg-${MTG_VERSION}-linux-${TARGETARCH}.tar.gz" \
+    -O /tmp/mtg.tar.gz && \
+    tar -xzf /tmp/mtg.tar.gz -C /usr/local/bin && \
+    chmod +x /usr/local/bin/mtg && \
+    rm /tmp/mtg.tar.gz
 
 # Create directories
-RUN mkdir -p /etc/telemt /var/lib/telemt && \
-    chown -R telemt:telemt /etc/telemt /var/lib/telemt
+RUN mkdir -p /etc/mtg /var/lib/mtg && \
+    chown -R mtg:mtg /etc/mtg /var/lib/mtg
 
-USER telemt
-WORKDIR /home/telemt
+USER mtg
+WORKDIR /home/mtg
 
-EXPOSE 443/tcp
+EXPOSE 443
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep telemt || exit 1
+ENTRYPOINT ["/usr/local/bin/mtg"]
+CMD ["run", "/etc/mtg/config.toml"]
+CONTAINERFILE
 
-ENTRYPOINT ["/usr/local/bin/telemt"]
-CMD ["/etc/telemt/telemt.toml"]
-EOF
-
+    # Build the image
     podman build \
-        --build-arg TARGETARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
-        -t localhost/telemt:latest \
-        "${tmpdir}"
+        --build-arg MTG_VERSION="${MTG_VERSION}" \
+        --build-arg TARGETARCH="${arch}" \
+        -t localhost/mtg:latest \
+        -t "localhost/mtg:${MTG_VERSION}" \
+        "${build_dir}"
 
-    rm -rf "${tmpdir}"
-    log_ok "Telemt image built"
+    # Cleanup
+    rm -rf "${build_dir}"
+
+    log_success "MTG container image built successfully"
 }
 
-#===============================================================================
-# Create Telemt configuration
-#===============================================================================
-create_config() {
+#-------------------------------------------------------------------------------
+# Create MTG configuration file
+#-------------------------------------------------------------------------------
+create_mtg_config() {
     local secret="$1"
-    local tls_domain="$2"
+    local fake_tls_domain="$2"
     local port="$3"
 
-    log_info "Creating Telemt configuration..."
+    log_info "Creating MTG configuration..."
 
     mkdir -p "${CONFIG_DIR}"
 
-    cat > "${CONFIG_FILE}" << EOF
-# Telemt Configuration
-# https://github.com/telemt/telemt
+    cat > "${CONFIG_DIR}/config.toml" << EOF
+# MTG Configuration File
+# Generated by deploy-mtproto.sh
 
-# === General Settings ===
-[general]
-# ad_tag = ""  # Uncomment and set from @mtproxybot for channel promotion
+# Secret configuration
+secret = "${secret}"
 
-[general.modes]
-classic = false
-secure = false
-tls = true  # TLS mode with SNI fronting (ee prefix)
-
-# === Server Settings ===
-[[server.listeners]]
-ip = "0.0.0.0"
+# Network settings
 port = ${port}
 
-# === Anti-Censorship & TLS Masking ===
-[censorship]
-# Domain for TLS fronting - DPI sees legitimate HTTPS to this domain
-# Recommended: popular sites with TLS 1.3
-tls_domain = "${tls_domain}"
+# Fake TLS configuration (for DPI evasion)
+# This makes the proxy traffic look like regular HTTPS to the specified domain
+[security]
+# Use Fake TLS for better obfuscation
+fake-tls = true
+fake-tls-domain = "${fake_tls_domain}"
 
-# === Users with Secret Keys ===
-[access.users]
-# Format: "username" = "32_hex_chars_secret"
-# Add more users as needed
-user = "${secret}"
+# Padding settings to make traffic look more natural
+padding-min = 16
+padding-max = 256
 
-# === Performance ===
-[server]
+# Performance settings
+[performance]
+# Number of workers
 workers = 4
-max_connections = 8192
 
-# === Timeouts ===
-[server.timeouts]
-connect = 30
-idle = 300
+# Buffer sizes
+read-buffer = 65536
+write-buffer = 65536
+
+# Connection limits
+max-connections = 8192
 EOF
 
-    chmod 600 "${CONFIG_FILE}"
-    log_ok "Configuration created: ${CONFIG_FILE}"
+    chmod 600 "${CONFIG_DIR}/config.toml"
+
+    log_success "MTG configuration created at ${CONFIG_DIR}/config.toml"
 }
 
-#===============================================================================
-# Create Quadlet unit
-#===============================================================================
-create_quadlet() {
-    local port="$1"
+#-------------------------------------------------------------------------------
+# Create Quadlet unit file for MTG
+#-------------------------------------------------------------------------------
+create_mtg_quadlet() {
+    log_info "Creating Quadlet unit file for MTG..."
 
-    log_info "Creating Quadlet unit..."
-
-    cat > "${QUADLET_DIR}/telemt.container" << EOF
+    cat > "${QUADLET_DIR}/mtg.container" << 'EOF'
 [Unit]
-Description=Telemt MTProto Proxy
+Description=MTProto Proxy (MTG)
 After=network.target network-online.target
 Wants=network-online.target
-Documentation=https://github.com/telemt/telemt
+Documentation=https://github.com/9seconds/mtg
 
 [Container]
-Image=localhost/telemt:latest
-ContainerName=telemt
+Image=localhost/mtg:latest
+ContainerName=mtg
+HostName=mtg-proxy
 
-PublishPort=${port}:${port}/tcp
+# Ports
+PublishPort=443:443/tcp
 
-Volume=/etc/telemt:/etc/telemt:ro,Z
+# Volumes
+Volume=/etc/mtg:/etc/mtg:ro,Z
+Volume=/var/lib/mtg:/var/lib/mtg:rw,Z
 
+# Environment
 Environment=TZ=UTC
-Environment=RUST_LOG=info
 
 # Security
 NoNewPrivileges=true
 DropCapability=ALL
 AddCapability=NET_BIND_SERVICE
 
-# Limits
-MemoryMax=256M
-CPUQuota=25%
+# Resource limits
+MemoryMax=512M
+MemoryHigh=400M
+CPUQuota=50%
 
-# Limits for connections
-Ulimit=nofile=65536:65536
+# Health check
+HealthCmd=/usr/local/bin/mtg healthcheck /etc/mtg/config.toml
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=10s
+
+# Auto-update (optional, disabled by default)
+# Pull=always
 
 [Service]
 Restart=always
 RestartSec=10
-TimeoutStartSec=120
+TimeoutStartSec=300
 TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target default.target
 EOF
 
-    log_ok "Quadlet created: ${QUADLET_DIR}/telemt.container"
+    log_success "Quadlet unit file created at ${QUADLET_DIR}/mtg.container"
 }
 
-#===============================================================================
-# Configure firewall
-#===============================================================================
-configure_firewall() {
-    local port="$1"
+#-------------------------------------------------------------------------------
+# Create Telegram bot container
+#-------------------------------------------------------------------------------
+create_bot_container() {
+    if [[ -z "${TELEGRAM_BOT_TOKEN}" ]]; then
+        log_warn "Telegram bot token not provided, skipping bot container creation"
+        return 0
+    fi
 
+    log_info "Creating Telegram bot container..."
+
+    local build_dir
+    build_dir=$(mktemp -d)
+
+    # Create bot script
+    cat > "${build_dir}/bot.py" << 'BOTSCRIPT'
+#!/usr/bin/env python3
+"""
+Telegram Bot for MTG Proxy Management
+"""
+import os
+import json
+import logging
+import asyncio
+import subprocess
+from datetime import datetime
+from typing import Optional
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Configuration
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x]
+PROXY_HOST = os.environ.get('PROXY_HOST', 'localhost')
+PROXY_PORT = int(os.environ.get('PROXY_PORT', 443))
+CONFIG_PATH = '/etc/mtg/config.toml'
+
+def is_admin(user_id: int) -> bool:
+    """Check if user is admin."""
+    return user_id in ADMIN_IDS or len(ADMIN_IDS) == 0
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Access denied. You are not authorized.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("Status", callback_data="status")],
+        [InlineKeyboardButton("Get Connection Info", callback_data="info")],
+        [InlineKeyboardButton("Restart Proxy", callback_data="restart")],
+        [InlineKeyboardButton("Statistics", callback_data="stats")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "*MTG Proxy Management Bot*\n\n"
+        "Welcome! Use the buttons below to manage your proxy.",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Access denied.")
+        return
+
+    try:
+        # Check if container is running
+        result = subprocess.run(
+            ['podman', 'container', 'inspect', '-f', '{{.State.Status}}', 'mtg'],
+            capture_output=True, text=True, timeout=10
+        )
+        status = result.stdout.strip() if result.returncode == 0 else "unknown"
+
+        status_emoji = "OK" if status == "running" else "ERROR"
+
+        await update.message.reply_text(
+            f"*Proxy Status*\n\n"
+            f"State: `{status}`\n"
+            f"Host: `{PROXY_HOST}`\n"
+            f"Port: `{PROXY_PORT}`",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Error getting status: `{str(e)}`", parse_mode='Markdown')
+
+async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /info command - generate connection link."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Access denied.")
+        return
+
+    try:
+        # Read config to get secret
+        secret = None
+        with open(CONFIG_PATH, 'r') as f:
+            content = f.read()
+            for line in content.split('\n'):
+                if line.startswith('secret = '):
+                    secret = line.split('"')[1]
+                    break
+
+        if not secret:
+            await update.message.reply_text("Could not read secret from config")
+            return
+
+        # Generate proxy link
+        # Format: tg://proxy?server=HOST&port=PORT&secret=SECRET
+        proxy_link = f"tg://proxy?server={PROXY_HOST}&port={PROXY_PORT}&secret={secret}"
+
+        # Also generate t.me format
+        tme_link = f"https://t.me/proxy?server={PROXY_HOST}&port={PROXY_PORT}&secret={secret}"
+
+        await update.message.reply_text(
+            "*Connection Information*\n\n"
+            f"Server: `{PROXY_HOST}`\n"
+            f"Port: `{PROXY_PORT}`\n"
+            f"Secret: `{secret}`\n\n"
+            f"*Direct Link:*\n`{proxy_link}`\n\n"
+            f"*Click Link:*\n{tme_link}",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Error: `{str(e)}`", parse_mode='Markdown')
+
+async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /restart command."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Access denied.")
+        return
+
+    try:
+        result = subprocess.run(
+            ['systemctl', 'restart', 'mtg'],
+            capture_output=True, text=True, timeout=30
+        )
+
+        if result.returncode == 0:
+            await update.message.reply_text("Proxy restarted successfully!")
+        else:
+            await update.message.reply_text(f"Restart failed: `{result.stderr}`", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"Error: `{str(e)}`", parse_mode='Markdown')
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /stats command."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Access denied.")
+        return
+
+    try:
+        # Get container stats
+        result = subprocess.run(
+            ['podman', 'stats', '--no-stream', '--format', 'json', 'mtg'],
+            capture_output=True, text=True, timeout=10
+        )
+
+        if result.returncode == 0:
+            stats = json.loads(result.stdout)
+            if stats:
+                s = stats[0]
+                await update.message.reply_text(
+                    "*Proxy Statistics*\n\n"
+                    f"CPU: `{s.get('CPU', 'N/A')}`\n"
+                    f"Memory: `{s.get('MemUsage', 'N/A')}`\n"
+                    f"Network IO: `{s.get('NetIO', 'N/A')}`\n"
+                    f"Block IO: `{s.get('BlockIO', 'N/A')}`\n"
+                    f"PIDs: `{s.get('PIDs', 'N/A')}`",
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.message.reply_text("No stats available")
+        else:
+            await update.message.reply_text(f"Error getting stats: `{result.stderr}`", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"Error: `{str(e)}`", parse_mode='Markdown')
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button callbacks."""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await query.edit_message_text("Access denied.")
+        return
+
+    data = query.data
+
+    if data == "status":
+        await cmd_status(update, context)
+    elif data == "info":
+        await cmd_info(update, context)
+    elif data == "restart":
+        await cmd_restart(update, context)
+    elif data == "stats":
+        await cmd_stats(update, context)
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command."""
+    await update.message.reply_text(
+        "*Available Commands*\n\n"
+        "/start - Open control panel\n"
+        "/status - Check proxy status\n"
+        "/info - Get connection info\n"
+        "/restart - Restart proxy\n"
+        "/stats - View statistics\n"
+        "/help - Show this help",
+        parse_mode='Markdown'
+    )
+
+def main():
+    """Run the bot."""
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is required!")
+        return
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("info", cmd_info))
+    app.add_handler(CommandHandler("restart", cmd_restart))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CallbackQueryHandler(button_callback))
+
+    logger.info("Starting bot...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()
+BOTSCRIPT
+
+    # Create requirements
+    cat > "${build_dir}/requirements.txt" << 'EOF'
+python-telegram-bot>=20.0
+EOF
+
+    # Create Containerfile for bot
+    cat > "${build_dir}/Containerfile" << 'EOF'
+FROM docker.io/library/python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir python-telegram-bot>=20.0
+
+COPY bot.py .
+
+RUN useradd -m -u 1000 botuser && \
+    chown -R botuser:botuser /app
+
+USER botuser
+
+CMD ["python", "bot.py"]
+EOF
+
+    # Build image
+    podman build -t localhost/mtg-bot:latest "${build_dir}"
+
+    # Cleanup
+    rm -rf "${build_dir}"
+
+    # Create bot quadlet
+    cat > "${QUADLET_DIR}/mtg-bot.container" << EOF
+[Unit]
+Description=MTG Telegram Bot
+After=network.target network-online.target mtg.service
+Requires=mtg.service
+Documentation=https://github.com/9seconds/mtg
+
+[Container]
+Image=localhost/mtg-bot:latest
+ContainerName=mtg-bot
+
+# Environment
+Environment=BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+Environment=ADMIN_IDS=${TELEGRAM_ADMIN_ID}
+Environment=PROXY_HOST=${MTG_DOMAIN:-localhost}
+Environment=PROXY_PORT=${MTG_PORT}
+
+# Volumes
+Volume=/etc/mtg:/etc/mtg:ro,Z
+Volume=/run/podman/podman.sock:/run/podman/podman.sock:rw
+
+# Security
+NoNewPrivileges=true
+DropCapability=ALL
+
+# Resource limits
+MemoryMax=128M
+
+[Service]
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    log_success "Telegram bot container created"
+}
+
+#-------------------------------------------------------------------------------
+# Generate connection QR code and info
+#-------------------------------------------------------------------------------
+generate_connection_info() {
+    local secret="$1"
+    local domain="$2"
+    local port="$3"
+
+    log_info "Generating connection information..."
+
+    local proxy_link="tg://proxy?server=${domain}&port=${port}&secret=${secret}"
+    local tme_link="https://t.me/proxy?server=${domain}&port=${port}&secret=${secret}"
+
+    cat > "${CONFIG_DIR}/connection-info.txt" << EOF
+====================================
+MTProto Proxy Connection Information
+====================================
+
+Server: ${domain}
+Port: ${port}
+Secret: ${secret}
+
+Direct Link (for Telegram app):
+${proxy_link}
+
+Click-to-Connect Link:
+${tme_link}
+
+Setup Instructions:
+1. Copy the link above
+2. Send it to yourself in Telegram
+3. Click the link to connect
+4. Alternatively: Settings > Data and Storage > Proxy Settings > Add Proxy
+
+For command-line setup:
+mtg run /etc/mtg/config.toml
+
+Generated at: $(date)
+====================================
+EOF
+
+    log_success "Connection info saved to ${CONFIG_DIR}/connection-info.txt"
+}
+
+#-------------------------------------------------------------------------------
+# Configure firewall
+#-------------------------------------------------------------------------------
+configure_firewall() {
     log_info "Configuring firewall..."
 
     if command -v ufw &> /dev/null; then
-        ufw allow "${port}/tcp" comment 'Telemt MTProxy'
-        log_ok "UFW: port ${port} allowed"
+        ufw allow "${MTG_PORT}/tcp" comment 'MTProto Proxy'
+        log_success "UFW rule added for port ${MTG_PORT}"
     elif command -v firewall-cmd &> /dev/null; then
-        firewall-cmd --permanent --add-port="${port}/tcp"
+        firewall-cmd --permanent --add-port="${MTG_PORT}/tcp"
         firewall-cmd --reload
-        log_ok "Firewalld: port ${port} allowed"
+        log_success "Firewalld rule added for port ${MTG_PORT}"
     else
-        log_warn "No firewall detected. Open port ${port} manually if needed."
+        log_warn "No firewall detected. Please manually open port ${MTG_PORT}/tcp"
     fi
 }
 
-#===============================================================================
-# Start service
-#===============================================================================
-start_service() {
-    log_info "Starting Telemt service..."
+#-------------------------------------------------------------------------------
+# Enable and start services
+#-------------------------------------------------------------------------------
+enable_services() {
+    log_info "Enabling and starting services..."
 
+    # Reload systemd to pick up quadlet files
     systemctl daemon-reload
-    systemctl enable --now telemt
 
-    sleep 2
+    # Enable and start MTG
+    systemctl enable --now mtg
 
-    if systemctl is-active --quiet telemt; then
-        log_ok "Telemt is running"
-    else
-        log_error "Telemt failed to start"
-        journalctl -u telemt --no-pager -n 20
-        exit 1
+    # Check if bot should be started
+    if [[ -n "${TELEGRAM_BOT_TOKEN}" ]]; then
+        systemctl enable --now mtg-bot
     fi
+
+    log_success "Services started successfully"
 }
 
-#===============================================================================
-# Show connection info
-#===============================================================================
-show_connection_info() {
+#-------------------------------------------------------------------------------
+# Show status and connection info
+#-------------------------------------------------------------------------------
+show_status() {
     local secret="$1"
-    local host="$2"
+    local domain="$2"
     local port="$3"
-    local tls_domain="$4"
-
-    # Generate connection links
-    # TLS mode uses 'ee' prefix for secret
-    local ee_secret="ee${secret}"
-
-    local tg_link="tg://proxy?server=${host}&port=${port}&secret=${ee_secret}"
-    local tme_link="https://t.me/proxy?server=${host}&port=${port}&secret=${ee_secret}"
 
     echo ""
-    echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║          TELEMT MTPROXY DEPLOYMENT COMPLETE!              ║${NC}"
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}                                                            ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}Server:${NC}      ${YELLOW}${host}${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}Port:${NC}        ${YELLOW}${port}${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}Secret:${NC}      ${YELLOW}${secret}${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}TLS Mask:${NC}    ${YELLOW}${tls_domain}${NC}"
-    echo -e "${GREEN}║${NC}                                                            ${GREEN}║${NC}"
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}               ${CYAN}CONNECTION LINKS${NC}                          ${GREEN}║${NC}"
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}======================================${NC}"
+    echo -e "${GREEN}   MTProto Proxy Deployment Complete!${NC}"
+    echo -e "${GREEN}======================================${NC}"
     echo ""
-    echo -e "  ${BLUE}Direct Link (tap in Telegram):${NC}"
-    echo -e "  ${tme_link}"
+    echo -e "Server: ${YELLOW}${domain}${NC}"
+    echo -e "Port: ${YELLOW}${port}${NC}"
+    echo -e "Secret: ${YELLOW}${secret}${NC}"
     echo ""
-    echo -e "  ${BLUE}tg:// protocol:${NC}"
-    echo -e "  ${tg_link}"
+    echo -e "${BLUE}Connection Link:${NC}"
+    echo -e "https://t.me/proxy?server=${domain}&port=${port}&secret=${secret}"
     echo ""
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}               ${CYAN}USAGE INSTRUCTIONS${NC}                         ${GREEN}║${NC}"
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${BLUE}Service Status:${NC}"
+    systemctl status mtg --no-pager -l || true
     echo ""
-    echo -e "  ${YELLOW}1.${NC} Send the link above to yourself in Telegram"
-    echo -e "  ${YELLOW}2.${NC} Tap the link to connect"
-    echo -e "  ${YELLOW}3.${NC} Or: Settings → Data & Storage → Proxy → Add Proxy"
+    echo -e "${BLUE}Useful Commands:${NC}"
+    echo "  View logs:     journalctl -u mtg -f"
+    echo "  Restart:       systemctl restart mtg"
+    echo "  Stop:          systemctl stop mtg"
+    echo "  Status:        systemctl status mtg"
     echo ""
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}               ${CYAN}MANAGEMENT COMMANDS${NC}                         ${GREEN}║${NC}"
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${BLUE}Configuration files:${NC}"
+    echo "  Config: ${CONFIG_DIR}/config.toml"
+    echo "  Quadlet: ${QUADLET_DIR}/mtg.container"
+    echo "  Connection: ${CONFIG_DIR}/connection-info.txt"
     echo ""
-    echo -e "  ${YELLOW}Status:${NC}  systemctl status telemt"
-    echo -e "  ${YELLOW}Logs:${NC}    journalctl -u telemt -f"
-    echo -e "  ${YELLOW}Restart:${NC} systemctl restart telemt"
-    echo -e "  ${YELLOW}Stop:${NC}     systemctl stop telemt"
-    echo ""
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}               ${CYAN}PRIVACY FEATURES${NC}                            ${GREEN}║${NC}"
-    echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
-    echo ""
-    echo -e "  ${YELLOW}✓${NC} TLS Fronting - DPI sees legitimate HTTPS to ${tls_domain}"
-    echo -e "  ${YELLOW}✓${NC} Transparent TCP Splice - undetectable by crawlers"
-    echo -e "  ${YELLOW}✓${NC} No bot, no extra services - minimal attack surface"
-    echo -e "  ${YELLOW}✓${NC} Rust memory safety - no buffer overflows"
-    echo ""
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-
-    # Save to file
-    cat > "${CONFIG_DIR}/connection-info.txt" << EOF
-=====================================
-TELEMT MTPROTOXY CONNECTION INFO
-=====================================
-
-Server:  ${host}
-Port:    ${port}
-Secret:  ${secret}
-TLS Mask: ${tls_domain}
-
-CONNECTION LINKS:
------------------
-
-Click to connect:
-${tme_link}
-
-tg:// protocol:
-${tg_link}
-
-HOW TO CONNECT:
----------------
-1. Send the link above to yourself in Telegram
-2. Tap the link to connect
-3. Or: Settings → Data & Storage → Proxy → Add Proxy
-
-CONFIG FILE: ${CONFIG_FILE}
-LOGS: journalctl -u telemt -f
-
-Generated: $(date)
-EOF
-
-    log_ok "Connection info saved to ${CONFIG_DIR}/connection-info.txt"
 }
 
-#===============================================================================
-# Interactive setup
-#===============================================================================
-interactive_setup() {
-    echo ""
-    echo -e "${GREEN}╔════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║       TELEMT MTPROXY SETUP WIZARD                      ║${NC}"
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════╝${NC}"
+#-------------------------------------------------------------------------------
+# Interactive configuration
+#-------------------------------------------------------------------------------
+interactive_config() {
+    echo -e "${GREEN}MTProto Proxy Setup Wizard${NC}"
+    echo "================================"
     echo ""
 
     # Get domain/IP
-    local public_ip
-    public_ip=$(get_public_ip)
-
-    echo -e "Your public IP: ${YELLOW}${public_ip}${NC}"
-    echo ""
-
-    if [[ -z "${TELEMT_DOMAIN}" ]]; then
-        read -rp "Enter domain (or press Enter to use IP): " domain_input
-        TELEMT_DOMAIN="${domain_input:-${public_ip}}"
+    if [[ -z "${MTG_DOMAIN}" ]]; then
+        read -rp "Enter your server domain or IP address: " MTG_DOMAIN
     fi
 
     # Get port
-    if [[ -z "${TELEMT_PORT}" ]]; then
-        read -rp "Port [443]: " port_input
-        TELEMT_PORT="${port_input:-443}"
+    if [[ -z "${MTG_PORT}" ]]; then
+        read -rp "Enter port for MTProto proxy [443]: " MTG_PORT
+        MTG_PORT="${MTG_PORT:-443}"
     fi
 
-    # Get secret
-    if [[ -z "${TELEMT_SECRET}" ]]; then
-        local generated_secret
-        generated_secret=$(generate_secret)
-        read -rp "Secret [${generated_secret}]: " secret_input
-        TELEMT_SECRET="${secret_input:-${generated_secret}}"
-    fi
-
-    # Get TLS mask domain
+    # Select Fake TLS domain
     echo ""
-    echo "Select TLS masking domain (DPI will see HTTPS to this site):"
-    echo "  1) www.microsoft.com (recommended)"
-    echo "  2) www.google.com"
-    echo "  3) www.apple.com"
-    echo "  4) www.cloudflare.com"
-    echo "  5) www.amazon.com"
-    echo "  6) Custom domain"
-    echo ""
-    read -rp "Selection [1]: " tls_choice
+    echo "Select a Fake TLS domain (for DPI evasion):"
+    PS3="Enter selection [1]: "
+    select fake_domain in "${FAKE_TLS_DOMAINS[@]}" "Custom domain"; do
+        if [[ -n "${fake_domain}" ]]; then
+            if [[ "${fake_domain}" == "Custom domain" ]]; then
+                read -rp "Enter custom domain: " SELECTED_TLS_DOMAIN
+            else
+                SELECTED_TLS_DOMAIN="${fake_domain}"
+            fi
+            break
+        fi
+    done
 
-    case "${tls_choice:-1}" in
-        1) TLS_MASK_DOMAIN="www.microsoft.com" ;;
-        2) TLS_MASK_DOMAIN="www.google.com" ;;
-        3) TLS_MASK_DOMAIN="www.apple.com" ;;
-        4) TLS_MASK_DOMAIN="www.cloudflare.com" ;;
-        5) TLS_MASK_DOMAIN="www.amazon.com" ;;
-        6) read -rp "Enter domain: " TLS_MASK_DOMAIN ;;
-        *) TLS_MASK_DOMAIN="www.microsoft.com" ;;
-    esac
-
-    # DuckDNS option
+    # Ask about Telegram bot
     echo ""
-    read -rp "Setup DuckDNS for dynamic DNS? [y/N]: " duckdns_choice
-    if [[ "${duckdns_choice,,}" =~ ^y ]]; then
-        USE_DUCKDNS="true"
-        read -rp "DuckDNS subdomain (without .duckdns.org): " DUCKDNS_DOMAIN
-        read -rp "DuckDNS token: " DUCKDNS_TOKEN
+    read -rp "Do you want to set up the Telegram management bot? [y/N]: " setup_bot
+    if [[ "${setup_bot,,}" =~ ^y ]]; then
+        read -rp "Enter Telegram Bot Token: " TELEGRAM_BOT_TOKEN
+        read -rp "Enter your Telegram User ID (for admin access): " TELEGRAM_ADMIN_ID
     fi
 }
 
-#===============================================================================
-# Main
-#===============================================================================
+#-------------------------------------------------------------------------------
+# Main deployment function
+#-------------------------------------------------------------------------------
 main() {
     echo ""
-    echo -e "${GREEN}Telemt MTProto Proxy Deployment${NC}"
-    echo -e "${GREEN}For Ubuntu Server 24.04.4 LTS${NC}"
+    echo -e "${GREEN}======================================${NC}"
+    echo -e "${GREEN}  MTProto Proxy Deployment Script${NC}"
+    echo -e "${GREEN}  For Ubuntu Server 24.04.4 LTS${NC}"
+    echo -e "${GREEN}======================================${NC}"
     echo ""
 
     check_root
 
-    # Interactive or non-interactive
+    # Interactive or automated mode
     if [[ "${1:-}" != "--non-interactive" ]]; then
-        interactive_setup
+        interactive_config
     fi
 
-    # Validate
-    if [[ -z "${TELEMT_SECRET}" ]]; then
-        TELEMT_SECRET=$(generate_secret)
+    # Validate required settings
+    if [[ -z "${MTG_DOMAIN}" ]]; then
+        log_error "Server domain/IP is required. Set MTG_DOMAIN environment variable or run in interactive mode."
+        exit 1
     fi
 
-    if [[ -z "${TELEMT_DOMAIN}" ]]; then
-        TELEMT_DOMAIN=$(get_public_ip)
-    fi
+    # Generate secret if not provided
+    MTG_SECRET="${MTG_SECRET:-$(generate_secret)}"
+    SELECTED_TLS_DOMAIN="${SELECTED_TLS_DOMAIN:-www.google.com}"
 
     log_info "Starting deployment..."
     echo ""
 
-    install_deps
+    # Run deployment steps
+    install_dependencies
     configure_podman
-    setup_duckdns
-    build_telemt_image
-    create_config "${TELEMT_SECRET}" "${TLS_MASK_DOMAIN}" "${TELEMT_PORT}"
-    create_quadlet "${TELEMT_PORT}"
-    configure_firewall "${TELEMT_PORT}"
-    start_service
+    install_quadlet
+    build_mtg_image
+    create_mtg_config "${MTG_SECRET}" "${SELECTED_TLS_DOMAIN}" "${MTG_PORT}"
+    create_mtg_quadlet
 
-    show_connection_info "${TELEMT_SECRET}" "${TELEMT_DOMAIN}" "${TELEMT_PORT}" "${TLS_MASK_DOMAIN}"
+    # Create bot if requested
+    if [[ -n "${TELEGRAM_BOT_TOKEN}" ]]; then
+        create_bot_container
+    fi
 
-    log_ok "Deployment complete!"
+    generate_connection_info "${MTG_SECRET}" "${MTG_DOMAIN}" "${MTG_PORT}"
+    configure_firewall
+    enable_services
+
+    # Show final status
+    show_status "${MTG_SECRET}" "${MTG_DOMAIN}" "${MTG_PORT}"
+
+    log_success "Deployment completed successfully!"
 }
 
+#-------------------------------------------------------------------------------
+# Run main function
+#-------------------------------------------------------------------------------
 main "$@"
