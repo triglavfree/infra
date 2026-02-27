@@ -89,11 +89,13 @@ create_config() {
     log_info "Creating config..."
     mkdir -p "${CONFIG_DIR}"
     
-    # Create config with correct telemt format
+    # Full telemt config with ALL required fields
     cat > "${CONFIG_DIR}/telemt.toml" << EOF
 [general]
 
 [general.modes]
+classic = false
+secure = false
 tls = true
 
 [[server.listeners]]
@@ -107,7 +109,6 @@ tls_domain = "${TLS_MASK}"
 user = "${TELEMT_SECRET}"
 EOF
 
-    # Fix permissions for container user (uid 1000)
     chown -R 1000:1000 "${CONFIG_DIR}"
     chmod 755 "${CONFIG_DIR}"
     chmod 644 "${CONFIG_DIR}/telemt.toml"
