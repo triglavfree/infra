@@ -126,7 +126,7 @@ secure = false
 tls = true
 
 [general.links]
-show = "user"
+show = "*"
 public_host = "${TELEMT_DOMAIN}"
 public_port = ${TELEMT_PORT}
 
@@ -279,10 +279,10 @@ verify_deployment() {
 
 main() {
     echo ""
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}╔═══════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║       Telemt MTProto Proxy Installer              ║${NC}"
     echo -e "${GREEN}║           Ubuntu Server 24.04                     ║${NC}"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════════════════╝${NC}"
     echo ""
     
     check_root
