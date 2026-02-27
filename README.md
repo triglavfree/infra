@@ -70,7 +70,7 @@ bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh
 ```bash
 bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/run.sh)
 ```
-### TorrServer + XRAY Core (xhttps)
+### TorrServer + XRAY Core (xhttp)
 ```bash
 curl -s https://raw.githubusercontent.com/triglavfree/infra/main/torrserver+xray.sh | bash
 ```
