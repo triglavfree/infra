@@ -111,21 +111,35 @@ create_config() {
     rm -rf "${CONFIG_DIR}"
     mkdir -p "${CONFIG_DIR}"
     
-    # Full telemt config with TLS fronting
+    # Correct telemt config format based on official example
+    # Port goes in [server] section, NOT in [[server.listeners]]
     cat > "${CONFIG_DIR}/telemt.toml" << EOF
+# Telemt MTProto Proxy Configuration
+
 [general]
+use_middle_proxy = true
+log_level = "normal"
 
 [general.modes]
 classic = false
-secure = false  
+secure = false
 tls = true
+
+[general.links]
+show = "user"
+public_host = "${TELEMT_DOMAIN}"
+public_port = ${TELEMT_PORT}
+
+[server]
+port = ${TELEMT_PORT}
 
 [[server.listeners]]
 ip = "0.0.0.0"
-port = ${TELEMT_PORT}
 
 [censorship]
 tls_domain = "${TLS_MASK}"
+mask = true
+tls_emulation = true
 
 [access.users]
 user = "${TELEMT_SECRET}"
@@ -137,7 +151,7 @@ EOF
     
     # Verify config was created correctly
     log_info "Verifying config:"
-    grep -E "^(port|ip)" "${CONFIG_DIR}/telemt.toml" | head -2
+    grep -E "^(port|public_port|public_host)" "${CONFIG_DIR}/telemt.toml"
     
     log_ok "Config created"
 }
@@ -257,8 +271,8 @@ verify_deployment() {
     fi
     
     # Show recent logs
-    log_info "Container logs (last 10 lines):"
-    podman logs telemt 2>&1 | tail -10
+    log_info "Container logs (last 15 lines):"
+    podman logs telemt 2>&1 | tail -15
     
     return 0
 }
@@ -266,8 +280,8 @@ verify_deployment() {
 main() {
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}║       Telemt MTProto Proxy Installer        ║${NC}"
-    echo -e "${GREEN}║           Ubuntu Server 24.04               ║${NC}"
+    echo -e "${GREEN}║       Telemt MTProto Proxy Installer              ║${NC}"
+    echo -e "${GREEN}║           Ubuntu Server 24.04                     ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════${NC}"
     echo ""
     
