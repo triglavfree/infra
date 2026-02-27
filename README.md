@@ -98,7 +98,51 @@ sudo umount /mnt/usb
 </details>
 
 ---
+### 🕉️ Cтек технологий
+```txt
+🐧 Linux Kernel (спасибо Линусу!)
+├── 🐳 Podman laresr
+│   ├── 📦 Quadlet (systemd интеграция)
+│   ├── 🏠 Gitea latest
+│   ├── 🎥 TorrServer latest
+│   ├── 🤖 Gitea Runner
+│   └── 🌐 NetBird latest
+├── 💾 Restic latest (бэкапы)
+├── 🛡️ UFW + fail2ban (безопасность)
+└── 🚀 BBR (сетевая оптимизация)
+```
+### 🔐 Управление инфраструктурой
 
+```bash
+# Статус всей инфраструктуры
+infra status
+
+# Логи сервисов
+infra logs gitea
+infra logs torrserver
+sudo infra logs netbird
+sudo infra logs gitea-runner
+
+# Управление
+infra start
+infra stop
+infra restart gitea
+
+# Бэкапы
+infra backup-setup
+infra backup
+infra backup-list
+infra restore-local
+
+# Обновление контейнеров
+infra update
+
+# Полное удаление
+infra clear
+```
+> 💡 Команда `infra` доступна сразу после развёртывания (добавлена в `~/.bashrc`).
+
+---
 ### QWEN-CODE
 
 Убедитесь, что у вас установлена ​​версия [Node.js](https://nodejs.org/en/download) или выше
@@ -149,50 +193,6 @@ nano ~/.qwen/settings.json
 npx n8n
 ```
 ---
-
-### 🕉️ Cтек технологий
-```txt
-🐧 Linux Kernel (спасибо Линусу!)
-├── 🐳 Podman laresr
-│   ├── 📦 Quadlet (systemd интеграция)
-│   ├── 🏠 Gitea latest
-│   ├── 🎥 TorrServer latest
-│   ├── 🤖 Gitea Runner
-│   └── 🌐 NetBird latest
-├── 💾 Restic latest (бэкапы)
-├── 🛡️ UFW + fail2ban (безопасность)
-└── 🚀 BBR (сетевая оптимизация)
-```
-### 🔐 Управление инфраструктурой
-
-```bash
-# Статус всей инфраструктуры
-infra status
-
-# Логи сервисов
-infra logs gitea
-infra logs torrserver
-sudo infra logs netbird
-sudo infra logs gitea-runner
-
-# Управление
-infra start
-infra stop
-infra restart gitea
-
-# Бэкапы
-infra backup-setup
-infra backup
-infra backup-list
-infra restore-local
-
-# Обновление контейнеров
-infra update
-
-# Полное удаление
-infra clear
-```
-> 💡 Команда `infra` доступна сразу после развёртывания (добавлена в `~/.bashrc`).
 
 ### 🙏 **Благодарности**
 
