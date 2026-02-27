@@ -16,7 +16,6 @@ NC='\033[0m'
 log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
 CONFIG_DIR="/etc/telemt"
 TELEMT_PORT="${TELEMT_PORT:-8443}"
@@ -35,7 +34,6 @@ is_interactive() {
 check_port() {
     if ss -tlnp | grep -q ":${TELEMT_PORT} "; then
         log_error "Port ${TELEMT_PORT} is already in use!"
-        log_info "Use: TELEMT_PORT=8443 bash"
         exit 1
     fi
 }
@@ -73,7 +71,7 @@ RUN apk add --no-cache ca-certificates
 RUN addgroup -g 1000 telemt && adduser -u 1000 -G telemt -D telemt
 ARG ARCH
 RUN arch=$(echo ${ARCH} | sed 's/amd64/x86_64/;s/arm64/aarch64/') && \
-    wget -q "https://github.com/telemt/telemt/releases/latest/download/telemt-${arch}-linux-gnu.tar.gz" && \
+    wget -q "https://github.com/telemt/telemt/releases/latest/download/telemt-${arch}-linux-musl.tar.gz" && \
     tar -xzf telemt-*.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/telemt && rm telemt-*.tar.gz
 RUN mkdir -p /etc/telemt && chown telemt:telemt /etc/telemt
 USER telemt
@@ -82,7 +80,7 @@ ENTRYPOINT ["/usr/local/bin/telemt"]
 CMD ["/etc/telemt/telemt.toml"]
 EOF
     podman build --build-arg ARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
-        -t localhost/telemt:latest "${tmpdir}" 2>&1 | tail -3
+        -t localhost/telemt:latest "${tmpdir}" 2>&1 | tail -5
     rm -rf "${tmpdir}"
     log_ok "Done"
 }
@@ -131,20 +129,15 @@ show_info() {
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}║           DEPLOYMENT COMPLETE!                        ║${NC}"
     echo -e "${GREEN}╠════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}Server:${NC}  ${YELLOW}${TELEMT_DOMAIN}${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}Port:${NC}    ${YELLOW}${TELEMT_PORT}${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}Secret:${NC} ${YELLOW}${TELEMT_SECRET}${NC}"
     echo -e "${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}               ${CYAN}CONNECTION LINK${NC}                 ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}"
+    echo ""
     echo -e "  ${link}"
     echo ""
-    echo -e "${GREEN}║${NC}  Commands: ${YELLOW}podman logs telemt${NC}     ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}           ${YELLOW}podman stop telemt${NC}         ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}           ${YELLOW}podman start telemt${NC}        ${GREEN}║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════${NC}"
-    echo ""
     echo "${link}" > "${CONFIG_DIR}/connection-link.txt"
     log_ok "Saved to ${CONFIG_DIR}/connection-link.txt"
 }
@@ -159,24 +152,16 @@ interactive() {
     echo ""
     echo -e "IP: ${YELLOW}${ip}${NC}"
     echo ""
-    echo -e "Port 443 is used by xray-core. Using ${YELLOW}8443${NC} as default."
+    echo -e "Port 443 is used. Using ${YELLOW}8443${NC} as default."
     echo ""
-    
-    # Port selection
     read -rp "Port [8443]: " port_input
     TELEMT_PORT="${port_input:-8443}"
-    
-    # Check if selected port is available
     while ss -tlnp | grep -q ":${TELEMT_PORT} "; do
         log_error "Port ${TELEMT_PORT} is in use!"
         read -rp "Enter another port: " TELEMT_PORT
     done
-    
-    # Domain
     read -rp "Domain [${ip}]: " d
     TELEMT_DOMAIN="${d:-${ip}}"
-    
-    # Secret
     local s=$(gen_secret)
     read -rp "Secret [${s}]: " d
     TELEMT_SECRET="${d:-${s}}"
@@ -188,18 +173,13 @@ main() {
     echo -e "${GREEN}Ubuntu 24.04${NC}"
     echo ""
     check_root
-    
-    # Non-interactive defaults
     if ! is_interactive; then
         TELEMT_DOMAIN=$(get_ip)
         TELEMT_SECRET=$(gen_secret)
     else
         interactive
     fi
-    
-    # Check port availability
     check_port
-    
     log_info "Deploying on port ${TELEMT_PORT}..."
     install_deps
     configure_podman
