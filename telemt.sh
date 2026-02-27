@@ -1,194 +1,158 @@
 #!/bin/bash
 #===============================================================================
-# Прямая установка Telemt MTProto Proxy на Ubuntu Server
-# С динамическим получением ссылки на последний релиз
+# Telemt MTProto Proxy - БЕЗОПАСНАЯ УСТАНОВКА
+# Версия: 3.0.15 (стабильная LTS)
+# ССЫЛКИ НЕ СОХРАНЯЮТСЯ - ПОКАЗЫВАЮТСЯ ОДИН РАЗ
 #===============================================================================
 set -euo pipefail
 
-# Цвета для вывода
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+#═══════════════════════════════════════════════════════════════════════════════
+# ЦВЕТА И СТИЛИ
+#═══════════════════════════════════════════════════════════════════════════════
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; MAGENTA='\033[0;35m'
+WHITE='\033[1;37m'; NC='\033[0m'
 
-# Переменные
+# Символы для рамок
+TOP_LEFT='╔'; TOP_RIGHT='╗'; BOTTOM_LEFT='╚'; BOTTOM_RIGHT='╝'
+HORIZONTAL='═'; VERTICAL='║'; CROSS_LEFT='╠'; CROSS_RIGHT='╣'
+
+#═══════════════════════════════════════════════════════════════════════════════
+# ПЕРЕМЕННЫЕ
+#═══════════════════════════════════════════════════════════════════════════════
 TELEMT_PORT="${1:-8443}"
 TELEMT_SECRET=""
 TELEMT_DOMAIN=""
 TLS_MASK="www.microsoft.com"
 CONFIG_DIR="/etc/telemt"
 
-# Функции вывода
-log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+#═══════════════════════════════════════════════════════════════════════════════
+# ФУНКЦИИ ВЫВОДА
+#═══════════════════════════════════════════════════════════════════════════════
+print_header() {
+    local title="$1"
+    local width=70
+    local title_len=${#title}
+    local padding=$(( (width - title_len - 2) / 2 ))
+    
+    echo ""
+    echo -e "${GREEN}${TOP_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${TOP_RIGHT}${NC}"
+    printf "${GREEN}${VERTICAL}${NC}%*s${GREEN}${VERTICAL}${NC}\n" $((width - 2)) ""
+    printf "${GREEN}${VERTICAL}${NC}%*s%-*s%*s${GREEN}${VERTICAL}${NC}\n" $((padding)) "" $title_len "$title" $((width - 2 - title_len - padding)) ""
+    printf "${GREEN}${VERTICAL}${NC}%*s${GREEN}${VERTICAL}${NC}\n" $((width - 2)) ""
+    echo -e "${GREEN}${BOTTOM_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${BOTTOM_RIGHT}${NC}"
+    echo ""
+}
 
-# Проверка прав root
+print_section() {
+    local title="$1"
+    echo -e "${CYAN}${CROSS_LEFT}${HORIZONTAL}${HORIZONTAL} ${title} ${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${CROSS_RIGHT}${NC}"
+}
+
+print_info() { printf "${BLUE}  ▶${NC} %s\n" "$1"; }
+print_ok() { printf "${GREEN}  ✓${NC} %s\n" "$1"; }
+print_error() { printf "${RED}  ✗${NC} %s\n" "$1"; }
+print_warn() { printf "${YELLOW}  ⚠${NC} %s\n" "$1"; }
+
+print_value() {
+    local label="$1"
+    local value="$2"
+    printf "  ${CYAN}%-15s${NC} ${YELLOW}%s${NC}\n" "$label:" "$value"
+}
+
+print_link() {
+    local type="$1"
+    local url="$2"
+    printf "  ${MAGENTA}%-6s${NC} ${WHITE}%s${NC}\n" "$type:" "$url"
+}
+
+print_command() {
+    printf "  ${GREEN}❯${NC} ${YELLOW}%s${NC}\n" "$1"
+}
+
+print_line() {
+    echo -e "  ${BLUE}──────────────────────────────────────────────────────${NC}"
+}
+
+print_warning_box() {
+    echo ""
+    echo -e "${YELLOW}${TOP_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${TOP_RIGHT}${NC}"
+    echo -e "${YELLOW}${VERTICAL}${NC}  ⚠  ВНИМАНИЕ: ССЫЛКА БУДЕТ ПОКАЗАНА ТОЛЬКО ОДИН РАЗ  ${YELLOW}${VERTICAL}${NC}"
+    echo -e "${YELLOW}${VERTICAL}${NC}  ⚠  СОХРАНИТЕ ЕЁ СЕЙЧАС! ФАЙЛЫ НЕ СОХРАНЯЮТСЯ     ${YELLOW}${VERTICAL}${NC}"
+    echo -e "${YELLOW}${BOTTOM_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${BOTTOM_RIGHT}${NC}"
+    echo ""
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+# ОСНОВНЫЕ ФУНКЦИИ
+#═══════════════════════════════════════════════════════════════════════════════
 check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_error "Запустите скрипт от root (sudo)"
-        exit 1
-    fi
-    log_ok "Права root получены"
+    [[ $EUID -eq 0 ]] || { print_error "Запустите от root (sudo)"; exit 1; }
+    print_ok "Права root получены"
 }
 
-# Получение внешнего IP
 get_ip() {
-    local ip
-    ip=$(curl -s --max-time 5 -4 ifconfig.me 2>/dev/null || echo "")
-    if [[ -z "$ip" ]]; then
-        ip=$(curl -s --max-time 5 -4 icanhazip.com 2>/dev/null || echo "127.0.0.1")
-    fi
-    echo "$ip"
+    curl -s --max-time 5 -4 ifconfig.me || echo "UNKNOWN"
 }
 
-# Генерация секрета
 gen_secret() {
     openssl rand -hex 16
 }
 
-# Проверка порта
 check_port() {
     if ss -tlnp | grep -q ":${TELEMT_PORT} "; then
-        log_error "Порт ${TELEMT_PORT} уже занят!"
-        log_info "Процессы, использующие порт ${TELEMT_PORT}:"
-        ss -tlnp | grep ":${TELEMT_PORT}" || true
-        return 1
+        print_error "Порт ${TELEMT_PORT} уже занят!"
+        ss -tlnp | grep ":${TELEMT_PORT}" | head -3
+        exit 1
     fi
-    log_ok "Порт ${TELEMT_PORT} свободен"
-    return 0
+    print_ok "Порт ${TELEMT_PORT} свободен"
 }
 
-# Установка зависимостей
+cleanup() {
+    # Безопасное удаление всех следов
+    rm -f /tmp/telemt* 2>/dev/null || true
+    rm -f /etc/telemt/connection-link.txt 2>/dev/null || true
+    # Секрет хранится только в памяти, файл конфига остаётся для работы сервиса
+}
+
 install_deps() {
-    log_info "Установка необходимых пакетов..."
+    print_section "УСТАНОВКА ЗАВИСИМОСТЕЙ"
     apt-get update -qq
-    apt-get install -y -qq curl wget openssl ca-certificates xxd netcat-openbsd jq
-    log_ok "Зависимости установлены"
+    apt-get install -y -qq curl wget openssl ca-certificates xxd
+    print_ok "Зависимости установлены"
 }
 
-# Скачивание и установка Telemt с динамической ссылкой
 download_telemt() {
-    log_info "Получение информации о последнем релизе Telemt..."
+    print_section "ЗАГРУЗКА TELEMT 3.0.15 (LTS)"
     
-    # Определяем архитектуру
-    local arch
-    arch=$(uname -m)
-    case $arch in
-        x86_64)  arch="amd64" ;;
-        aarch64) arch="arm64" ;;
-        *) log_error "Неподдерживаемая архитектура: $arch"; exit 1 ;;
-    esac
+    cd /tmp
+    rm -f telemt* 2>/dev/null || true
     
-    # Определяем тип libc
-    local libc="gnu"
-    if ldd --version 2>&1 | grep -iq musl; then
-        libc="musl"
-    fi
-    
-    # Формируем ожидаемое имя файла
-    local expected_pattern="telemt-${arch}-linux-${libc}.tar.gz"
-    log_info "Ищем файл: $expected_pattern"
-    
-    # Получаем данные последнего релиза через GitHub API
-    local api_url="https://api.github.com/repos/telemt/telemt/releases/latest"
-    log_info "Запрос к API: $api_url"
-    
-    local release_data
-    release_data=$(curl -s "$api_url")
-    
-    # Проверяем, не вернул ли API ошибку
-    if echo "$release_data" | grep -q "API rate limit exceeded"; then
-        log_error "Превышен лимит запросов к GitHub API. Попробуйте позже или укажите версию вручную."
-        log_info "Ручной способ: зайдите на https://github.com/telemt/telemt/releases/latest"
-        log_info "Скопируйте ссылку на файл ${expected_pattern} и скачайте вручную"
+    print_info "Скачивание бинарного файла..."
+    if ! wget -q https://github.com/telemt/telemt/releases/download/3.0.15/telemt-x86_64-linux-gnu.tar.gz; then
+        print_error "Не удалось скачать Telemt"
         exit 1
     fi
     
-    # Извлекаем URL для скачивания нужного файла
-    local download_url
-    download_url=$(echo "$release_data" | jq -r '.assets[] | select(.name | contains("'"$expected_pattern"'")) | .browser_download_url' 2>/dev/null || echo "")
+    print_info "Распаковка архива..."
+    tar -xzf telemt-x86_64-linux-gnu.tar.gz
     
-    # Если jq не сработал, пробуем grep
-    if [[ -z "$download_url" || "$download_url" == "null" ]]; then
-        download_url=$(echo "$release_data" | grep -oP '"browser_download_url": "\K(.*?)(?=")' | grep "$expected_pattern" | head -1)
-    fi
+    [[ -f "/bin/telemt" ]] && mv /bin/telemt /bin/telemt.bak 2>/dev/null || true
     
-    if [[ -z "$download_url" ]]; then
-        log_error "Не удалось найти ссылку для скачивания файла $expected_pattern"
-        log_info "Доступные файлы в релизе:"
-        echo "$release_data" | grep -oP '"name": "\K(.*?)(?=")' | sed 's/^/  - /'
-        exit 1
-    fi
+    mv telemt /bin/telemt
+    chmod +x /bin/telemt
     
-    log_info "Скачивание: $download_url"
-    
-    # Скачиваем и распаковываем
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    cd "$tmp_dir"
-    
-    if ! wget -q "$download_url"; then
-        log_error "Не удалось скачать файл"
-        cd - >/dev/null
-        rm -rf "$tmp_dir"
-        exit 1
-    fi
-    
-    # Находим скачанный tar.gz файл
-    local archive_file
-    archive_file=$(ls *.tar.gz | head -1)
-    
-    if [[ -z "$archive_file" ]]; then
-        log_error "Не найден архив после скачивания"
-        cd - >/dev/null
-        rm -rf "$tmp_dir"
-        exit 1
-    fi
-    
-    log_info "Распаковка $archive_file..."
-    if ! tar -xzf "$archive_file"; then
-        log_error "Не удалось распаковать архив"
-        cd - >/dev/null
-        rm -rf "$tmp_dir"
-        exit 1
-    fi
-    
-    # Ищем бинарник telemt
-    if [[ -f "telemt" ]]; then
-        mv telemt /usr/local/bin/
-    else
-        # Возможно, бинарник в поддиректории
-        find . -name "telemt" -type f -exec mv {} /usr/local/bin/ \; 2>/dev/null || true
-    fi
-    
-    if [[ ! -f "/usr/local/bin/telemt" ]]; then
-        log_error "Бинарник telemt не найден после распаковки"
-        ls -la
-        cd - >/dev/null
-        rm -rf "$tmp_dir"
-        exit 1
-    fi
-    
-    chmod +x /usr/local/bin/telemt
-    cd - >/dev/null
-    rm -rf "$tmp_dir"
-    
-    log_ok "Telemt установлен в /usr/local/bin/telemt"
+    print_ok "Telemt установлен в /bin/telemt"
 }
 
-# Создание конфигурации
 create_config() {
-    log_info "Создание конфигурации для порта ${TELEMT_PORT}..."
+    print_section "СОЗДАНИЕ КОНФИГУРАЦИИ"
     
     mkdir -p "${CONFIG_DIR}"
     
     cat > "${CONFIG_DIR}/telemt.toml" << EOF
 # Telemt MTProto Proxy Configuration
-# Автоматически сгенерировано установщиком
+# Версия 3.0.15 (LTS)
 
 [general]
 log_level = "normal"
@@ -198,9 +162,9 @@ classic = false
 secure = false
 tls = true
 
-[[server.listeners]]
-ip = "0.0.0.0"
+[server]
 port = ${TELEMT_PORT}
+listen_addr_ipv4 = "0.0.0.0"
 announce_ip = "${TELEMT_DOMAIN}"
 
 [censorship]
@@ -211,63 +175,61 @@ mask = true
 "user" = "${TELEMT_SECRET}"
 EOF
 
-    # Создаем директорию для кэша
-    mkdir -p "${CONFIG_DIR}/cache"
-    chmod 755 "${CONFIG_DIR}" "${CONFIG_DIR}/cache"
-    
-    log_ok "Конфигурация создана в ${CONFIG_DIR}/telemt.toml"
+    print_ok "Конфигурация создана в ${CONFIG_DIR}/telemt.toml"
 }
 
-# Создание systemd сервиса
 create_service() {
-    log_info "Создание systemd сервиса..."
+    print_section "СОЗДАНИЕ SYSTEMD СЕРВИСА"
     
     cat > /etc/systemd/system/telemt.service << EOF
 [Unit]
-Description=Telemt MTProto Proxy
+Description=Telemt MTProto Proxy (LTS 3.0.15)
 After=network.target
 Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/telemt /etc/telemt/telemt.toml
+ExecStart=/bin/telemt /etc/telemt/telemt.toml
 WorkingDirectory=/tmp
 Restart=on-failure
-RestartSec=10
+RestartSec=5
 User=nobody
 Group=nogroup
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/etc/telemt/cache
+ReadWritePaths=/etc/telemt
 PrivateTmp=yes
-PrivateDevices=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-MemoryDenyWriteExecute=yes
 LimitNOFILE=65536
-LimitNPROC=64
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    log_ok "Systemd сервис создан"
+    print_ok "Systemd сервис создан"
 }
 
-# Запуск сервиса
+setup_firewall() {
+    print_section "НАСТРОЙКА ФАЙРВОЛА"
+    if command -v ufw &>/dev/null; then
+        ufw allow "${TELEMT_PORT}/tcp" comment "Telemt" 2>/dev/null || true
+        print_ok "Порт ${TELEMT_PORT} открыт в UFW"
+    fi
+}
+
 start_service() {
-    log_info "Запуск Telemt сервиса..."
+    print_section "ЗАПУСК СЕРВИСА"
     
+    systemctl stop telemt 2>/dev/null || true
     systemctl start telemt
+    
     sleep 3
     
     if systemctl is-active --quiet telemt; then
-        log_ok "Сервис запущен"
+        print_ok "Сервис запущен"
     else
-        log_error "Сервис не запустился!"
+        print_error "Сервис не запустился!"
         journalctl -u telemt -n 20 --no-pager
         exit 1
     fi
@@ -275,190 +237,131 @@ start_service() {
     systemctl enable telemt &>/dev/null || true
 }
 
-# Проверка работы
 verify_installation() {
-    log_info "Проверка установки..."
+    print_section "ПРОВЕРКА УСТАНОВКИ"
     
-    # Проверка процесса
     if ! pgrep -f telemt >/dev/null; then
-        log_error "Процесс Telemt не найден"
+        print_error "Процесс Telemt не найден"
         return 1
     fi
-    log_ok "Процесс Telemt запущен"
+    print_ok "Процесс Telemt запущен"
     
-    # Проверка порта
     if ! ss -tlnp | grep -q ":${TELEMT_PORT} "; then
-        log_error "Порт ${TELEMT_PORT} не слушается!"
+        print_error "Порт ${TELEMT_PORT} не слушается!"
         return 1
     fi
-    log_ok "Порт ${TELEMT_PORT} слушается"
+    print_ok "Порт ${TELEMT_PORT} слушается"
     
-    # Проверка на каком IP слушает
     local listening_ip
     listening_ip=$(ss -tlnp | grep ":${TELEMT_PORT}" | awk '{print $4}' | cut -d: -f1)
     if [[ "$listening_ip" == "0.0.0.0" ]]; then
-        log_ok "Слушает на всех интерфейсах (0.0.0.0:${TELEMT_PORT})"
-    else
-        log_warn "Слушает только на ${listening_ip}:${TELEMT_PORT}"
+        print_ok "Слушает на всех интерфейсах (0.0.0.0:${TELEMT_PORT})"
     fi
     
     return 0
 }
 
-# Настройка firewall
-setup_firewall() {
-    if command -v ufw &>/dev/null; then
-        log_info "Настройка UFW..."
-        ufw allow "${TELEMT_PORT}/tcp" comment "Telemt" 2>/dev/null || true
-        log_ok "Порт ${TELEMT_PORT} открыт в UFW"
-    fi
-}
-
-# Создание ссылок для Telegram
-create_links() {
+show_secret_once() {
+    print_warning_box
+    
     local tls_hex
     tls_hex=$(echo -n "${TLS_MASK}" | xxd -p)
     local tls_secret="ee${TELEMT_SECRET}${tls_hex}"
     
-    local tg_link="tg://proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=${tls_secret}"
-    local web_link="https://t.me/proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=${tls_secret}"
+    echo -e "${GREEN}${TOP_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${TOP_RIGHT}${NC}"
+    echo -e "${GREEN}${VERTICAL}${NC}                    ${WHITE}ДАННЫЕ ДЛЯ ПОДКЛЮЧЕНИЯ${NC}                    ${GREEN}${VERTICAL}${NC}"
+    echo -e "${GREEN}${CROSS_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${CROSS_RIGHT}${NC}"
     
-    echo ""
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}║           TELEMT УСТАНОВЛЕН УСПЕШНО!                      ║${NC}"
-    echo -e "${GREEN}╠═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}Сервер:${NC}     ${YELLOW}${TELEMT_DOMAIN}${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}Порт:${NC}       ${YELLOW}${TELEMT_PORT}${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}Секрет:${NC}    ${YELLOW}${TELEMT_SECRET}${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}TLS маска:${NC} ${YELLOW}${TLS_MASK}${NC}"
-    echo -e "${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}                 ${CYAN}ССЫЛКИ ДЛЯ ПОДКЛЮЧЕНИЯ${NC}"
-    echo -e "${GREEN}║${NC}"
-    echo -e "  ${web_link}"
-    echo ""
-    echo -e "  ${tg_link}"
-    echo ""
-    echo -e "${GREEN}║${NC}  ${YELLOW}Полезные команды:${NC}"
-    echo -e "${GREEN}║${NC}  ${CYAN}systemctl status telemt${NC}      - статус"
-    echo -e "${GREEN}║${NC}  ${CYAN}journalctl -u telemt -f${NC}      - логи"
-    echo -e "${GREEN}║${NC}  ${CYAN}systemctl stop telemt${NC}        - остановка"
-    echo -e "${GREEN}║${NC}  ${CYAN}systemctl start telemt${NC}       - запуск"
-    echo -e "${GREEN}║${NC}  ${CYAN}systemctl restart telemt${NC}     - перезапуск"
-    echo -e "${GREEN}║${NC}  ${CYAN}cat /etc/telemt/telemt.toml${NC}  - конфиг"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════${NC}"
+    print_value "Сервер" "${TELEMT_DOMAIN}"
+    print_value "Порт" "${TELEMT_PORT}"
+    print_value "Секрет" "${TELEMT_SECRET}"
+    print_value "TLS маска" "${TLS_MASK}"
+    print_line
+    print_link "ВЕБ" "https://t.me/proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=${tls_secret}"
+    print_link "TG" "tg://proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=${tls_secret}"
+    print_line
+    print_info "⚠  ЭТО ЕДИНСТВЕННЫЙ РАЗ, КОГДА ССЫЛКА ПОКАЗАНА"
+    print_info "⚠  СОХРАНИТЕ ЕЁ СЕЙЧАС В БЕЗОПАСНОМ МЕСТЕ"
+    
+    echo -e "${GREEN}${BOTTOM_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${BOTTOM_RIGHT}${NC}"
     echo ""
     
-    # Сохраняем ссылки в файл
-    echo "${web_link}" > "${CONFIG_DIR}/connection-link.txt"
-    echo "${tg_link}" >> "${CONFIG_DIR}/connection-link.txt"
-    echo "" >> "${CONFIG_DIR}/connection-link.txt"
-    echo "Сервер: ${TELEMT_DOMAIN}" >> "${CONFIG_DIR}/connection-link.txt"
-    echo "Порт: ${TELEMT_PORT}" >> "${CONFIG_DIR}/connection-link.txt"
-    echo "Секрет: ${TELEMT_SECRET}" >> "${CONFIG_DIR}/connection-link.txt"
-    
-    log_ok "Ссылки сохранены в ${CONFIG_DIR}/connection-link.txt"
-}
-
-# Диагностика сети
-network_diagnostic() {
-    echo ""
-    echo -e "${YELLOW}══════════════════ ДИАГНОСТИКА СЕТИ ══════════════════${NC}"
-    
-    # Проверка локального подключения
-    echo -e "${CYAN}Локальная проверка:${NC}"
-    if nc -z localhost "${TELEMT_PORT}" 2>/dev/null; then
-        echo -e "  ${GREEN}✓${NC} localhost:${TELEMT_PORT} доступен"
-    else
-        echo -e "  ${RED}✗${NC} localhost:${TELEMT_PORT} НЕ доступен"
-    fi
-    
-    # Проверка через публичный IP
-    echo -e "${CYAN}Проверка через публичный IP:${NC}"
-    if nc -z "${TELEMT_DOMAIN}" "${TELEMT_PORT}" 2>/dev/null; then
-        echo -e "  ${GREEN}✓${NC} ${TELEMT_DOMAIN}:${TELEMT_PORT} доступен"
-    else
-        echo -e "  ${RED}✗${NC} ${TELEMT_DOMAIN}:${TELEMT_PORT} НЕ доступен"
-    fi
-    
-    # Проверка iptables правил
-    echo -e "${CYAN}Правила iptables для порта ${TELEMT_PORT}:${NC}"
-    iptables -L INPUT -n -v | grep -E "dpt:${TELEMT_PORT}|policy" | sed 's/^/  /'
-    
-    # Проверка UFW
-    if command -v ufw &>/dev/null; then
-        echo -e "${CYAN}Статус UFW:${NC}"
-        ufw status | grep -E "${TELEMT_PORT}|Status" | sed 's/^/  /'
-    fi
-    
-    echo -e "${YELLOW}═══════════════════════════════════════════════════════${NC}"
-    echo ""
-    echo -e "${BLUE}👉 Для проверки доступности порта из интернета используйте:${NC}"
-    echo "   https://portchecker.co/"
-    echo "   https://2ip.ru/check-port/"
-    echo "   https://check-host.net/"
+    # Даём время скопировать ссылку
+    print_warn "Ожидание 30 секунд для копирования ссылки..."
+    for i in {30..1}; do
+        printf "\r  ${YELLOW}Осталось ${i} секунд...${NC} "
+        sleep 1
+    done
     echo ""
 }
 
-# Интерактивный режим
+show_commands() {
+    echo ""
+    echo -e "${GREEN}${TOP_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${TOP_RIGHT}${NC}"
+    echo -e "${GREEN}${VERTICAL}${NC}                    ${WHITE}КОМАНДЫ УПРАВЛЕНИЯ${NC}                      ${GREEN}${VERTICAL}${NC}"
+    echo -e "${GREEN}${CROSS_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${CROSS_RIGHT}${NC}"
+    
+    print_command "systemctl status telemt    # статус"
+    print_command "journalctl -u telemt -f    # логи"
+    print_command "systemctl restart telemt   # перезапуск"
+    print_command "systemctl stop telemt      # остановка"
+    print_command "systemctl start telemt     # запуск"
+    
+    echo -e "${GREEN}${BOTTOM_LEFT}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${HORIZONTAL}${BOTTOM_RIGHT}${NC}"
+    echo ""
+}
+
 interactive_mode() {
-    echo ""
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║        ИНТЕРАКТИВНАЯ УСТАНОВКА TELEMT               ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
-    echo ""
+    print_header "ИНТЕРАКТИВНАЯ УСТАНОВКА TELEMT LTS 3.0.15"
     
     local default_ip
     default_ip=$(get_ip)
-    echo -e "Определен внешний IP: ${YELLOW}${default_ip}${NC}"
+    print_info "Определен внешний IP: ${YELLOW}${default_ip}${NC}"
     echo ""
     
-    read -rp "Введите порт [${TELEMT_PORT}]: " port_input
-    TELEMT_PORT="${port_input:-${TELEMT_PORT}}"
+    read -rp "  ${CYAN}Порт${NC} [8443]: " port_input
+    TELEMT_PORT="${port_input:-8443}"
     
-    while ! check_port; do
-        read -rp "Введите другой порт: " TELEMT_PORT
+    while ss -tlnp | grep -q ":${TELEMT_PORT} "; do
+        print_error "Порт ${TELEMT_PORT} занят!"
+        read -rp "  ${CYAN}Введите другой порт${NC}: " TELEMT_PORT
     done
     
-    read -rp "Домен или IP для ссылок [${default_ip}]: " domain_input
+    read -rp "  ${CYAN}Домен или IP для ссылок${NC} [${default_ip}]: " domain_input
     TELEMT_DOMAIN="${domain_input:-${default_ip}}"
     
     local default_secret
     default_secret=$(gen_secret)
-    read -rp "Секретный ключ [${default_secret}]: " secret_input
+    read -rp "  ${CYAN}Секретный ключ${NC} [${default_secret}]: " secret_input
     TELEMT_SECRET="${secret_input:-${default_secret}}"
     
-    read -rp "Домен для TLS маскировки [${TLS_MASK}]: " mask_input
+    read -rp "  ${CYAN}Домен TLS маскировки${NC} [${TLS_MASK}]: " mask_input
     TLS_MASK="${mask_input:-${TLS_MASK}}"
+    
+    echo ""
 }
 
-# Основная функция
 main() {
-    echo ""
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}║    Прямая установка Telemt MTProto Proxy     ║${NC}"
-    echo -e "${GREEN}║           Ubuntu Server 24.04               ║${NC}"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════${NC}"
-    echo ""
+    # Устанавливаем обработчик для очистки при любом исходе
+    trap cleanup EXIT
+    
+    print_header "TELEMT LTS 3.0.15 - БЕЗОПАСНАЯ УСТАНОВКА"
     
     check_root
     
-    # Интерактивный режим, если запущено без аргументов и есть терминал
     if [[ -t 0 && $# -eq 0 ]]; then
         interactive_mode
     else
         TELEMT_PORT="${1:-8443}"
         TELEMT_DOMAIN=$(get_ip)
         TELEMT_SECRET=$(gen_secret)
-        log_info "Неинтерактивный режим"
-        log_info "Порт: ${TELEMT_PORT}"
-        log_info "IP: ${TELEMT_DOMAIN}"
+        print_info "Неинтерактивный режим"
+        print_info "Порт: ${TELEMT_PORT}"
+        print_info "IP: ${TELEMT_DOMAIN}"
+        echo ""
     fi
     
-    # Проверка порта
-    check_port || exit 1
-    
-    # Установка
+    check_port
     install_deps
     download_telemt
     create_config
@@ -466,17 +369,15 @@ main() {
     setup_firewall
     start_service
     
-    # Проверка
     if verify_installation; then
-        create_links
-        network_diagnostic
-        log_ok "Установка успешно завершена!"
-        log_info "Проверьте доступность порта через онлайн-сервисы."
+        show_secret_once
+        show_commands
+        print_ok "Установка успешно завершена!"
+        print_info "Проверьте доступность порта: ${CYAN}https://portchecker.co/${NC}"
     else
-        log_error "Установка не удалась!"
+        print_error "Установка не удалась!"
         exit 1
     fi
 }
 
-# Запуск
 main "$@"
