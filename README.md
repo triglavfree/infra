@@ -96,6 +96,57 @@ cp -r /mnt/usb/* ~/
 sudo umount /mnt/usb
 ```
 </details>
+---
+### QWEN-CODE
+
+Убедитесь, что у вас установлена ​​версия [Node.js](https://nodejs.org/en/download) или выше
+```bash
+npm install -g @qwen-code/qwen-code@latest
+```
+<details>
+<summary> добавить MCP сервер Context7</summary>
+  
+Откройте файл настроек Qwen Coder. Он находится в `~/.qwen/settings.json`
+```bash
+nano ~/.qwen/settings.json
+```
+Добавьте в него конфигурацию для Context7:
+```json
+{
+  "security": {
+    "auth": {
+      "selectedType": "qwen-oauth"
+    }
+  },
+  "$version": 2,
+  "general": {
+    "language": "ru"
+  },
+  "mcpServers": {
+    "context7": {
+      "httpUrl": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "ваш_реальный_api_ключ",
+        "Accept": "application/json, text/event-stream"
+      }
+    }
+  }
+}
+```
+В консоли QWEN-CODE выполните
+```bash
+ /mcp list
+```
+
+</details>
+
+---
+### n8n
+Попробуйте n8n мгновенно с помощью [npx](https://docs.n8n.io/hosting/installation/npm/#try-n8n-with-npx) (требуется [Node.js](https://nodejs.org/en/download) ):
+```bash
+npx n8n
+```
+---
 
 ### 🕉️ Cтек технологий
 ```txt
