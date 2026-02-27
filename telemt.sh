@@ -22,10 +22,10 @@ log_ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 CONFIG_DIR="/etc/telemt"
-TELEMT_PORT="${TELEMT_PORT:-8443}"
-TELEMT_SECRET="${TELEMT_SECRET:-}"
-TELEMT_DOMAIN="${TELEMT_DOMAIN:-}"
-TLS_MASK="${TLS_MASK:-www.microsoft.com}"
+TELEMT_PORT="8443"
+TELEMT_SECRET=""
+TELEMT_DOMAIN=""
+TLS_MASK="www.microsoft.com"
 
 check_root() {
     [[ $EUID -eq 0 ]] || { log_error "Run as root"; exit 1; }
@@ -290,10 +290,15 @@ verify_deployment() {
 }
 
 main() {
+    # Parse command line arguments
+    if [[ -n "${1:-}" ]]; then
+        TELEMT_PORT="$1"
+    fi
+    
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}║       Telemt MTProto Proxy Installer              ║${NC}"
-    echo -e "${GREEN}║           Ubuntu Server 24.04                     ║${NC}"
+    echo -e "${GREEN}║       Telemt MTProto Proxy Installer        ║${NC}"
+    echo -e "${GREEN}║           Ubuntu Server 24.04               ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════${NC}"
     echo ""
     
