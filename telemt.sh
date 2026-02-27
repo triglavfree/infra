@@ -1,6 +1,12 @@
 #!/bin/bash
 #===============================================================================
 # Telemt MTProto Proxy for Ubuntu Server 24.04.4 LTS
+#
+# Usage:
+#   curl -s https://raw.githubusercontent.com/triglavfree/infra/main/telemt.sh | bash
+#
+# With custom port:
+#   TELEMT_PORT=9443 curl -s https://... | bash
 #===============================================================================
 set -euo pipefail
 
@@ -156,11 +162,16 @@ run_container() {
     # Remove old container
     podman rm -f telemt 2>/dev/null || true
     
+    # Create cache directory
+    mkdir -p "${CONFIG_DIR}/cache"
+    chown -R 1000:1000 "${CONFIG_DIR}/cache"
+    
     # Run with explicit port mapping
     podman run -d --name telemt \
         --restart always \
         -p "${TELEMT_PORT}:${TELEMT_PORT}" \
         -v /etc/telemt:/etc/telemt:ro \
+        -v /etc/telemt/cache:/var/lib/telemt:rw \
         --ulimit nofile=65536:65536 \
         localhost/telemt:latest
     
@@ -185,7 +196,11 @@ firewall() {
 }
 
 show_info() {
-    local link="https://t.me/proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=ee${TELEMT_SECRET}"
+    # Convert TLS domain to hex (for ee secret format)
+    local tls_hex
+    tls_hex=$(echo -n "${TLS_MASK}" | xxd -p)
+    local link="tg://proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=ee${TELEMT_SECRET}${tls_hex}"
+    local link_web="https://t.me/proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=ee${TELEMT_SECRET}${tls_hex}"
     
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════${NC}"
@@ -199,6 +214,8 @@ show_info() {
     echo -e "${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                 ${CYAN}CONNECTION LINK${NC}"
     echo -e "${GREEN}║${NC}"
+    echo -e "  ${link_web}"
+    echo ""
     echo -e "  ${link}"
     echo ""
     echo -e "${GREEN}║${NC}  ${YELLOW}podman logs -f telemt${NC}     ${GREEN}║${NC}"
@@ -208,7 +225,8 @@ show_info() {
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════${NC}"
     echo ""
     
-    echo "${link}" > "${CONFIG_DIR}/connection-link.txt"
+    echo "${link_web}" > "${CONFIG_DIR}/connection-link.txt"
+    echo "${link}" >> "${CONFIG_DIR}/connection-link.txt"
     chown 1000:1000 "${CONFIG_DIR}/connection-link.txt"
     log_ok "Link saved to ${CONFIG_DIR}/connection-link.txt"
 }
@@ -273,10 +291,10 @@ verify_deployment() {
 
 main() {
     echo ""
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}╔═══════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}║       Telemt MTProto Proxy Installer              ║${NC}"
     echo -e "${GREEN}║           Ubuntu Server 24.04                     ║${NC}"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════╝${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════════════════${NC}"
     echo ""
     
     check_root
