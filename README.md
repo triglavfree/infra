@@ -66,13 +66,19 @@ sudo reboot && exit
 bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh)
 ```
 ### VPS
-
+### Оптимизатор VPS
 ```bash
 bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/run.sh)
 ```
+### TorrServer + XRAY Core (xhttps)
 ```bash
 curl -s https://raw.githubusercontent.com/triglavfree/infra/main/torrserver+xray.sh | bash
 ```
+### Telemt MTProto Proxy for Telegram Deployment
+```bash
+curl -s https://raw.githubusercontent.com/triglavfree/infra/main/telemt.sh | bash
+```
+
 <details>
 <summary>c флешки:</summary>
 
