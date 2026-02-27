@@ -1,7 +1,7 @@
 #!/bin/bash
 #===============================================================================
 # Прямая установка Telemt MTProto Proxy на Ubuntu Server
-# Без Docker/Podman, напрямую через systemd
+# С динамическим получением ссылки на последний релиз
 #===============================================================================
 set -euo pipefail
 
@@ -66,13 +66,13 @@ check_port() {
 install_deps() {
     log_info "Установка необходимых пакетов..."
     apt-get update -qq
-    apt-get install -y -qq curl wget openssl ca-certificates xxd netcat-openbsd
+    apt-get install -y -qq curl wget openssl ca-certificates xxd netcat-openbsd jq
     log_ok "Зависимости установлены"
 }
 
-# Скачивание и установка Telemt
+# Скачивание и установка Telemt с динамической ссылкой
 download_telemt() {
-    log_info "Скачивание последней версии Telemt..."
+    log_info "Получение информации о последнем релизе Telemt..."
     
     # Определяем архитектуру
     local arch
@@ -89,18 +89,93 @@ download_telemt() {
         libc="musl"
     fi
     
-    # Формируем URL и скачиваем
-    local url="https://github.com/telemt/telemt/releases/latest/download/telemt-${arch}-linux-${libc}.tar.gz"
-    log_info "Загрузка: $url"
+    # Формируем ожидаемое имя файла
+    local expected_pattern="telemt-${arch}-linux-${libc}.tar.gz"
+    log_info "Ищем файл: $expected_pattern"
     
-    if ! wget -qO- "$url" | tar -xz; then
-        log_error "Не удалось скачать Telemt"
+    # Получаем данные последнего релиза через GitHub API
+    local api_url="https://api.github.com/repos/telemt/telemm/releases/latest"
+    log_info "Запрос к API: $api_url"
+    
+    local release_data
+    release_data=$(curl -s "$api_url")
+    
+    # Проверяем, не вернул ли API ошибку
+    if echo "$release_data" | grep -q "API rate limit exceeded"; then
+        log_error "Превышен лимит запросов к GitHub API. Попробуйте позже или укажите версию вручную."
+        log_info "Ручной способ: зайдите на https://github.com/telemt/telemt/releases/latest"
+        log_info "Скопируйте ссылку на файл ${expected_pattern} и скачайте вручную"
         exit 1
     fi
     
-    # Перемещаем бинарник
-    mv telemt /usr/local/bin/
+    # Извлекаем URL для скачивания нужного файла
+    local download_url
+    download_url=$(echo "$release_data" | jq -r '.assets[] | select(.name | contains("'"$expected_pattern"'")) | .browser_download_url' 2>/dev/null || echo "")
+    
+    # Если jq не сработал, пробуем grep
+    if [[ -z "$download_url" || "$download_url" == "null" ]]; then
+        download_url=$(echo "$release_data" | grep -oP '"browser_download_url": "\K(.*?)(?=")' | grep "$expected_pattern" | head -1)
+    fi
+    
+    if [[ -z "$download_url" ]]; then
+        log_error "Не удалось найти ссылку для скачивания файла $expected_pattern"
+        log_info "Доступные файлы в релизе:"
+        echo "$release_data" | grep -oP '"name": "\K(.*?)(?=")' | sed 's/^/  - /'
+        exit 1
+    fi
+    
+    log_info "Скачивание: $download_url"
+    
+    # Скачиваем и распаковываем
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    cd "$tmp_dir"
+    
+    if ! wget -q "$download_url"; then
+        log_error "Не удалось скачать файл"
+        cd - >/dev/null
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    
+    # Находим скачанный tar.gz файл
+    local archive_file
+    archive_file=$(ls *.tar.gz | head -1)
+    
+    if [[ -z "$archive_file" ]]; then
+        log_error "Не найден архив после скачивания"
+        cd - >/dev/null
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    
+    log_info "Распаковка $archive_file..."
+    if ! tar -xzf "$archive_file"; then
+        log_error "Не удалось распаковать архив"
+        cd - >/dev/null
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    
+    # Ищем бинарник telemt
+    if [[ -f "telemt" ]]; then
+        mv telemt /usr/local/bin/
+    else
+        # Возможно, бинарник в поддиректории
+        find . -name "telemt" -type f -exec mv {} /usr/local/bin/ \; 2>/dev/null || true
+    fi
+    
+    if [[ ! -f "/usr/local/bin/telemt" ]]; then
+        log_error "Бинарник telemt не найден после распаковки"
+        ls -la
+        cd - >/dev/null
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    
     chmod +x /usr/local/bin/telemt
+    cd - >/dev/null
+    rm -rf "$tmp_dir"
     
     log_ok "Telemt установлен в /usr/local/bin/telemt"
 }
