@@ -1,12 +1,6 @@
 #!/bin/bash
 #===============================================================================
 # Telemt MTProto Proxy for Ubuntu Server 24.04.4 LTS
-#
-# Usage:
-#   curl -s https://raw.githubusercontent.com/triglavfree/infra/main/telemt.sh | bash
-#
-# With custom port:
-#   TELEMT_PORT=9443 curl -s https://... | bash
 #===============================================================================
 set -euo pipefail
 
