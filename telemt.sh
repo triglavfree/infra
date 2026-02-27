@@ -16,9 +16,10 @@ NC='\033[0m'
 log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
 CONFIG_DIR="/etc/telemt"
-TELEMT_PORT="${TELEMT_PORT:-443}"
+TELEMT_PORT="${TELEMT_PORT:-8443}"
 TELEMT_SECRET="${TELEMT_SECRET:-}"
 TELEMT_DOMAIN="${TELEMT_DOMAIN:-}"
 TLS_MASK="${TLS_MASK:-www.microsoft.com}"
@@ -29,6 +30,14 @@ check_root() {
 
 is_interactive() {
     [[ -t 0 && -t 1 ]]
+}
+
+check_port() {
+    if ss -tlnp | grep -q ":${TELEMT_PORT} "; then
+        log_error "Port ${TELEMT_PORT} is already in use!"
+        log_info "Use: TELEMT_PORT=8443 bash"
+        exit 1
+    fi
 }
 
 install_deps() {
@@ -68,7 +77,7 @@ RUN arch=$(echo ${ARCH} | sed 's/amd64/x86_64/;s/arm64/aarch64/') && \
     tar -xzf telemt-*.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/telemt && rm telemt-*.tar.gz
 RUN mkdir -p /etc/telemt && chown telemt:telemt /etc/telemt
 USER telemt
-EXPOSE 443
+EXPOSE 8443
 ENTRYPOINT ["/usr/local/bin/telemt"]
 CMD ["/etc/telemt/telemt.toml"]
 EOF
@@ -99,7 +108,6 @@ EOF
 
 run_container() {
     log_info "Starting container..."
-    # Remove old container if exists
     podman rm -f telemt 2>/dev/null || true
     podman run -d --name telemt \
         --restart always \
@@ -150,8 +158,28 @@ interactive() {
     echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "IP: ${YELLOW}${ip}${NC}"
-    [[ -z "${TELEMT_DOMAIN}" ]] && { read -rp "Domain [${ip}]: " d; TELEMT_DOMAIN=${d:-${ip}}; }
-    [[ -z "${TELEMT_SECRET}" ]] && { local s=$(gen_secret); read -rp "Secret [${s}]: " d; TELEMT_SECRET=${d:-${s}}; }
+    echo ""
+    echo -e "Port 443 is used by xray-core. Using ${YELLOW}8443${NC} as default."
+    echo ""
+    
+    # Port selection
+    read -rp "Port [8443]: " port_input
+    TELEMT_PORT="${port_input:-8443}"
+    
+    # Check if selected port is available
+    while ss -tlnp | grep -q ":${TELEMT_PORT} "; do
+        log_error "Port ${TELEMT_PORT} is in use!"
+        read -rp "Enter another port: " TELEMT_PORT
+    done
+    
+    # Domain
+    read -rp "Domain [${ip}]: " d
+    TELEMT_DOMAIN="${d:-${ip}}"
+    
+    # Secret
+    local s=$(gen_secret)
+    read -rp "Secret [${s}]: " d
+    TELEMT_SECRET="${d:-${s}}"
 }
 
 main() {
@@ -160,9 +188,19 @@ main() {
     echo -e "${GREEN}Ubuntu 24.04${NC}"
     echo ""
     check_root
-    is_interactive || { TELEMT_DOMAIN=$(get_ip); TELEMT_SECRET=$(gen_secret); }
-    is_interactive && interactive
-    log_info "Deploying..."
+    
+    # Non-interactive defaults
+    if ! is_interactive; then
+        TELEMT_DOMAIN=$(get_ip)
+        TELEMT_SECRET=$(gen_secret)
+    else
+        interactive
+    fi
+    
+    # Check port availability
+    check_port
+    
+    log_info "Deploying on port ${TELEMT_PORT}..."
     install_deps
     configure_podman
     build_image
@@ -172,5 +210,4 @@ main() {
     show_info
     log_ok "Done!"
 }
-
 main
