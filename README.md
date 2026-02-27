@@ -68,7 +68,7 @@ sudo reboot && exit
 bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh)
 ```
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra_new.sh)
+bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/torrserver+xray.sh)
 ```
 <details>
 <summary>c флешки:</summary>
