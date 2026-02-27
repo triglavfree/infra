@@ -80,7 +80,7 @@ ENTRYPOINT ["/usr/local/bin/telemt"]
 CMD ["/etc/telemt/telemt.toml"]
 EOF
     podman build --build-arg ARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
-        -t localhost/telemt:latest "${tmpdir}" 2>&1 | tail -5
+        -t localhost/telemt:latest "${tmpdir}" 2>&1 | tail -3
     rm -rf "${tmpdir}"
     log_ok "Done"
 }
@@ -88,19 +88,30 @@ EOF
 create_config() {
     log_info "Creating config..."
     mkdir -p "${CONFIG_DIR}"
+    
+    # Create config with correct telemt format
     cat > "${CONFIG_DIR}/telemt.toml" << EOF
 [general]
+
 [general.modes]
 tls = true
+
 [[server.listeners]]
 ip = "0.0.0.0"
 port = ${TELEMT_PORT}
+
 [censorship]
 tls_domain = "${TLS_MASK}"
+
 [access.users]
 user = "${TELEMT_SECRET}"
 EOF
-    chmod 600 "${CONFIG_DIR}/telemt.toml"
+
+    # Fix permissions for container user (uid 1000)
+    chown -R 1000:1000 "${CONFIG_DIR}"
+    chmod 755 "${CONFIG_DIR}"
+    chmod 644 "${CONFIG_DIR}/telemt.toml"
+    
     log_ok "Done"
 }
 
@@ -113,6 +124,7 @@ run_container() {
         -v /etc/telemt:/etc/telemt:ro \
         --ulimit nofile=65536:65536 \
         localhost/telemt:latest
+    sleep 2
     log_ok "Done"
 }
 
@@ -129,16 +141,22 @@ show_info() {
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}║           DEPLOYMENT COMPLETE!                        ║${NC}"
     echo -e "${GREEN}╠════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}Server:${NC}  ${YELLOW}${TELEMT_DOMAIN}${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}Port:${NC}    ${YELLOW}${TELEMT_PORT}${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}Secret:${NC} ${YELLOW}${TELEMT_SECRET}${NC}"
     echo -e "${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}               ${CYAN}CONNECTION LINK${NC}                 ${GREEN}║${NC}"
-    echo ""
+    echo -e "${GREEN}║${NC}"
     echo -e "  ${link}"
     echo ""
+    echo -e "${GREEN}║${NC}  Commands: ${YELLOW}podman logs telemt${NC}     ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}           ${YELLOW}podman stop telemt${NC}         ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}           ${YELLOW}podman start telemt${NC}        ${GREEN}║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════${NC}"
+    echo ""
     echo "${link}" > "${CONFIG_DIR}/connection-link.txt"
+    chown 1000:1000 "${CONFIG_DIR}/connection-link.txt"
     log_ok "Saved to ${CONFIG_DIR}/connection-link.txt"
 }
 
