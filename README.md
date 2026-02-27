@@ -96,7 +96,9 @@ cp -r /mnt/usb/* ~/
 sudo umount /mnt/usb
 ```
 </details>
+
 ---
+
 ### QWEN-CODE
 
 Убедитесь, что у вас установлена ​​версия [Node.js](https://nodejs.org/en/download) или выше
