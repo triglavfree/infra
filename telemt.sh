@@ -1,12 +1,7 @@
 #!/bin/bash
 #===============================================================================
 # Telemt MTProto Proxy for Ubuntu Server 24.04.4 LTS
-#
-# Usage:
-#   curl -s https://raw.githubusercontent.com/triglavfree/infra/main/telemt.sh | bash
-#
-# With custom port:
-#   TELEMT_PORT=9443 curl -s https://... | bash
+# FIXED VERSION - with proper port configuration
 #===============================================================================
 set -euo pipefail
 
@@ -20,6 +15,7 @@ NC='\033[0m'
 log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
 CONFIG_DIR="/etc/telemt"
 TELEMT_PORT="8443"
@@ -47,7 +43,7 @@ check_port() {
 install_deps() {
     log_info "Installing packages..."
     apt-get update -qq
-    apt-get install -y -qq curl wget openssl podman ca-certificates
+    apt-get install -y -qq curl wget openssl podman ca-certificates xxd
     log_ok "Done"
 }
 
@@ -56,7 +52,6 @@ configure_podman() {
     rm -f /etc/containers/storage.conf 2>/dev/null || true
     systemctl stop podman 2>/dev/null || true
     
-    # Only reset if there's a driver mismatch
     if podman info 2>&1 | grep -q "mismatch"; then
         log_info "Resetting podman storage..."
         podman system reset -f 2>/dev/null || true
@@ -73,11 +68,10 @@ gen_secret() {
 }
 
 build_image() {
-    log_info "Building container image..."
+    log_info "Building container image for port ${TELEMT_PORT}..."
     local tmpdir
     tmpdir=$(mktemp -d)
     
-    # Containerfile with dynamic EXPOSE via build arg
     cat > "${tmpdir}/Containerfile" << EOF
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
@@ -89,101 +83,100 @@ RUN arch=\$(echo \${ARCH} | sed 's/amd64/x86_64/;s/arm64/aarch64/') && \
     tar -xzf telemt-*.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/telemt && rm telemt-*.tar.gz
 RUN mkdir -p /etc/telemt && chown telemt:telemt /etc/telemt
 USER telemt
-EXPOSE \${PORT}
+# No EXPOSE - we'll handle port via command line
 ENTRYPOINT ["/usr/local/bin/telemt"]
-CMD ["/etc/telemt/telemt.toml"]
+CMD ["--port", "${PORT}", "/etc/telemt/telemt.toml"]
 EOF
 
-    log_info "Building for port ${TELEMT_PORT}..."
-    podman build \
+    log_info "Building image (this may take a minute)..."
+    if ! podman build \
         --build-arg ARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
         --build-arg PORT="${TELEMT_PORT}" \
-        -t localhost/telemt:latest "${tmpdir}" 2>&1 | tail -5
+        -t localhost/telemt:latest "${tmpdir}" 2>&1 | tee "${tmpdir}/build.log"; then
+        log_error "Build failed!"
+        cat "${tmpdir}/build.log"
+        rm -rf "${tmpdir}"
+        exit 1
+    fi
     
     rm -rf "${tmpdir}"
-    log_ok "Image built"
+    log_ok "Image built successfully"
 }
 
 create_config() {
     log_info "Creating config for port ${TELEMT_PORT}..."
     
-    # Clean old config
     rm -rf "${CONFIG_DIR}"
     mkdir -p "${CONFIG_DIR}"
     
-    # Correct telemt config format based on official example
-    # Port goes in [server] section, NOT in [[server.listeners]]
+    # FIXED: Proper telemt config format - only using [[server.listeners]]
     cat > "${CONFIG_DIR}/telemt.toml" << EOF
 # Telemt MTProto Proxy Configuration
 
 [general]
-use_middle_proxy = true
-log_level = "normal"
+log_level = "info"
 
 [general.modes]
 classic = false
 secure = false
 tls = true
 
-[general.links]
-show = "*"
-public_host = "${TELEMT_DOMAIN}"
-public_port = ${TELEMT_PORT}
-
-[server]
-port = ${TELEMT_PORT}
-
+# IMPORTANT: Only use [[server.listeners]] format - this is what telemt expects
 [[server.listeners]]
 ip = "0.0.0.0"
+port = ${TELEMT_PORT}
+# announce_ip = "${TELEMT_DOMAIN}"
 
 [censorship]
 tls_domain = "${TLS_MASK}"
 mask = true
-tls_emulation = true
 
 [access.users]
-user = "${TELEMT_SECRET}"
+"user" = "${TELEMT_SECRET}"
 EOF
 
     chown -R 1000:1000 "${CONFIG_DIR}"
     chmod 755 "${CONFIG_DIR}"
     chmod 644 "${CONFIG_DIR}/telemt.toml"
     
-    # Verify config was created correctly
-    log_info "Verifying config:"
-    grep -E "^(port|public_port|public_host)" "${CONFIG_DIR}/telemt.toml"
-    
-    log_ok "Config created"
+    log_ok "Config created with port ${TELEMT_PORT}"
 }
 
 run_container() {
-    log_info "Starting container..."
+    log_info "Starting container on port ${TELEMT_PORT}..."
     
-    # Remove old container
-    podman rm -f telemt 2>/dev/null || true
+    # Stop and remove any existing container
+    podman stop telemt 2>/dev/null || true
+    podman rm telemt 2>/dev/null || true
     
     # Create cache directory
     mkdir -p "${CONFIG_DIR}/cache"
     chown -R 1000:1000 "${CONFIG_DIR}/cache"
     
-    # Run with explicit port mapping
-    podman run -d --name telemt \
+    # Run container with explicit port mapping and command line port override
+    if ! podman run -d --name telemt \
         --restart always \
         -p "${TELEMT_PORT}:${TELEMT_PORT}" \
-        -v /etc/telemt:/etc/telemt:ro \
-        -v /etc/telemt/cache:/var/lib/telemt:rw \
+        -v "${CONFIG_DIR}:/etc/telemt:ro" \
+        -v "${CONFIG_DIR}/cache:/var/lib/telemt:rw" \
         --ulimit nofile=65536:65536 \
-        localhost/telemt:latest
+        localhost/telemt:latest \
+        --port "${TELEMT_PORT}" /etc/telemt/telemt.toml; then
+        log_error "Failed to start container!"
+        exit 1
+    fi
     
-    sleep 3
+    sleep 5
     
-    # Check if container is actually running
+    # Check if container is running
     if podman ps --format "{{.Names}}" | grep -q "^telemt$"; then
         log_ok "Container started successfully"
     else
         log_error "Container failed to start!"
+        log_info "Container status:"
+        podman ps -a | grep telemt
         log_info "Container logs:"
-        podman logs telemt 2>&1 | tail -20
+        podman logs telemt 2>&1 | tail -30
         exit 1
     fi
 }
@@ -191,20 +184,66 @@ run_container() {
 firewall() {
     if command -v ufw &>/dev/null; then
         ufw allow "${TELEMT_PORT}/tcp" comment "Telemt" 2>/dev/null || true
-        log_ok "Firewall: port ${TELEMT_PORT} open"
+        log_ok "Firewall: port ${TELEMT_PORT} opened"
+    fi
+    
+    # Also check if there are any other firewall rules blocking
+    if command -v iptables &>/dev/null; then
+        if iptables -L INPUT -n | grep -q "DROP\|REJECT"; then
+            log_warn "iptables may have restrictive rules. Check with: iptables -L INPUT -n"
+        fi
     fi
 }
 
+verify_deployment() {
+    log_info "Verifying deployment on port ${TELEMT_PORT}..."
+    
+    # Check container is running
+    if ! podman ps --format "{{.Names}}" | grep -q "^telemt$"; then
+        log_error "Container not running!"
+        return 1
+    fi
+    
+    # Check port is listening on host
+    sleep 3
+    if ss -tlnp | grep -q ":${TELEMT_PORT} "; then
+        log_ok "Port ${TELEMT_PORT} is listening on host"
+    else
+        log_error "Port ${TELEMT_PORT} is NOT listening on host!"
+        log_info "Host listening ports:"
+        ss -tlnp | grep -E ":(22|${TELEMT_PORT}|443|80)" || true
+        log_info "Container logs:"
+        podman logs telemt 2>&1 | tail -20
+        return 1
+    fi
+    
+    # Check container logs for binding confirmation
+    if podman logs telemt 2>&1 | grep -q "listening on"; then
+        log_ok "Container confirmed listening"
+    else
+        log_warn "Could not confirm listening in logs. Checking manually..."
+    fi
+    
+    # Show recent logs
+    log_info "Container recent logs:"
+    podman logs telemt 2>&1 | tail -10
+    
+    return 0
+}
+
 show_info() {
-    # Convert TLS domain to hex (for ee secret format)
     local tls_hex
     tls_hex=$(echo -n "${TLS_MASK}" | xxd -p)
-    local link="tg://proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=ee${TELEMT_SECRET}${tls_hex}"
-    local link_web="https://t.me/proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=ee${TELEMT_SECRET}${tls_hex}"
+    
+    # Create proper TLS secret (ee + secret + domain hex)
+    local tls_secret="ee${TELEMT_SECRET}${tls_hex}"
+    
+    local link="tg://proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=${tls_secret}"
+    local link_web="https://t.me/proxy?server=${TELEMT_DOMAIN}&port=${TELEMT_PORT}&secret=${tls_secret}"
     
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}║              DEPLOYMENT COMPLETE!                        ║${NC}"
+    echo -e "${GREEN}║              TELEMT DEPLOYMENT COMPLETE!                  ║${NC}"
     echo -e "${GREEN}╠═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}Server:${NC}    ${YELLOW}${TELEMT_DOMAIN}${NC}"
@@ -212,23 +251,47 @@ show_info() {
     echo -e "${GREEN}║${NC}  ${CYAN}Secret:${NC}   ${YELLOW}${TELEMT_SECRET}${NC}"
     echo -e "${GREEN}║${NC}  ${CYAN}TLS Mask:${NC} ${YELLOW}${TLS_MASK}${NC}"
     echo -e "${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}                 ${CYAN}CONNECTION LINK${NC}"
+    echo -e "${GREEN}║${NC}                 ${CYAN}CONNECTION LINKS${NC}"
     echo -e "${GREEN}║${NC}"
     echo -e "  ${link_web}"
     echo ""
     echo -e "  ${link}"
     echo ""
-    echo -e "${GREEN}║${NC}  ${YELLOW}podman logs -f telemt${NC}     ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${YELLOW}podman stop telemt${NC}          ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${YELLOW}podman start telemt${NC}${NC}         ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${YELLOW}cat /etc/telemt/telemt.toml${NC}  ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${YELLOW}Useful commands:${NC}"
+    echo -e "${GREEN}║${NC}  ${CYAN}podman logs -f telemt${NC}     - view logs"
+    echo -e "${GREEN}║${NC}  ${CYAN}podman stop telemt${NC}        - stop container"
+    echo -e "${GREEN}║${NC}  ${CYAN}podman start telemt${NC}       - start container"
+    echo -e "${GREEN}║${NC}  ${CYAN}cat /etc/telemt/telemt.toml${NC} - view config"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════${NC}"
     echo ""
     
     echo "${link_web}" > "${CONFIG_DIR}/connection-link.txt"
     echo "${link}" >> "${CONFIG_DIR}/connection-link.txt"
-    chown 1000:1000 "${CONFIG_DIR}/connection-link.txt"
+    chown 1000:1000 "${CONFIG_DIR}/connection-link.txt" 2>/dev/null || true
     log_ok "Link saved to ${CONFIG_DIR}/connection-link.txt"
+}
+
+test_connection() {
+    log_info "Testing local connection..."
+    
+    # Test local connection to the port
+    if command -v nc &>/dev/null; then
+        if nc -z localhost "${TELEMT_PORT}" 2>/dev/null; then
+            log_ok "Local connection to port ${TELEMT_PORT} successful"
+        else
+            log_error "Local connection to port ${TELEMT_PORT} failed!"
+            return 1
+        fi
+    fi
+    
+    # Try to get a response from the proxy
+    if command -v curl &>/dev/null; then
+        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${TELEMT_PORT}" 2>/dev/null | grep -q "400\|200"; then
+            log_ok "Proxy responded to HTTP request"
+        else
+            log_warn "No HTTP response (expected for MTProto)"
+        fi
+    fi
 }
 
 interactive() {
@@ -236,12 +299,11 @@ interactive() {
     ip=$(get_ip)
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║              SETUP                             ║${NC}"
+    echo -e "${GREEN}║              TELEMT INTERACTIVE SETUP                ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "Detected IP: ${YELLOW}${ip}${NC}"
-    echo ""
-    echo -e "Note: Port 443 may be occupied. Using ${YELLOW}8443${NC} as default."
+    echo -e "Default port: ${YELLOW}8443${NC} (non-privileged, safe from conflicts)"
     echo ""
     
     read -rp "Port [8443]: " port_input
@@ -253,44 +315,19 @@ interactive() {
         read -rp "Enter another port: " TELEMT_PORT
     done
     
-    read -rp "Domain or IP [${ip}]: " d
+    read -rp "Domain or IP for links [${ip}]: " d
     TELEMT_DOMAIN="${d:-${ip}}"
     
     local s
     s=$(gen_secret)
     read -rp "Secret [${s}]: " d
     TELEMT_SECRET="${d:-${s}}"
-}
-
-verify_deployment() {
-    log_info "Verifying deployment..."
     
-    # Check container is running
-    if ! podman ps --format "{{.Names}}" | grep -q "^telemt$"; then
-        log_error "Container not running!"
-        return 1
-    fi
-    
-    # Check port is listening
-    sleep 2
-    if ss -tlnp | grep -q ":${TELEMT_PORT} "; then
-        log_ok "Port ${TELEMT_PORT} is listening"
-    else
-        log_error "Port ${TELEMT_PORT} is NOT listening!"
-        log_info "Container logs:"
-        podman logs telemt 2>&1 | tail -15
-        return 1
-    fi
-    
-    # Show recent logs
-    log_info "Container logs (last 15 lines):"
-    podman logs telemt 2>&1 | tail -15
-    
-    return 0
+    read -rp "TLS mask domain [${TLS_MASK}]: " d
+    TLS_MASK="${d:-${TLS_MASK}}"
 }
 
 main() {
-    # Parse command line arguments
     if [[ -n "${1:-}" ]]; then
         TELEMT_PORT="$1"
     fi
@@ -323,10 +360,16 @@ main() {
     create_config
     firewall
     run_container
-    verify_deployment
-    show_info
     
-    log_ok "Deployment complete!"
+    if verify_deployment; then
+        test_connection
+        show_info
+        log_ok "Deployment complete! Port ${TELEMT_PORT} should now be accessible."
+        log_info "Test from another machine: nc -zv ${TELEMT_DOMAIN} ${TELEMT_PORT}"
+    else
+        log_error "Deployment verification failed!"
+        exit 1
+    fi
 }
 
 main "$@"
