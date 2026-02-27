@@ -68,7 +68,7 @@ bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh
 ### VPS
 
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/triglavfree/deploy/main/scripts/vps/run2.sh)
+bash <(curl -s https://raw.githubusercontent.com/triglavfree/deploy/main/scripts/vps/run.sh)
 ```
 ```bash
 curl -s https://raw.githubusercontent.com/triglavfree/infra/main/torrserver+xray.sh | bash
