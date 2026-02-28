@@ -70,9 +70,13 @@ bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh
 ```bash
 bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/run.sh)
 ```
-### TorrServer + XRAY Core (xhttp)
+### TorrServer
 ```bash
-curl -s https://raw.githubusercontent.com/triglavfree/infra/main/torrserver+xray.sh | bash
+curl -s https://raw.githubusercontent.com/YouROK/TorrServer/master/installTorrServerLinux.sh | sudo bash
+```
+### XRAY
+```bash
+wget -qO- https://raw.githubusercontent.com/ServerTechnologies/simple-xray-core/refs/heads/main/xhttp-xray-install | bash
 ```
 ### Telemt MTProto Proxy for Telegram Deployment
 ```bash
