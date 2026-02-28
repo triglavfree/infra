@@ -31,7 +31,7 @@ print_header() {
     cat << 'EOF'
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                              ║
-║     XRAY (НАТИВНО) + TELEMT + TORRSERVER (В КОНТЕЙНЕРАХ PODMAN)              ║
+║     XRAY (НАТИВНО) + TELEMT + TORRSERVER (В КОНТЕЙНЕРАХ PODMAN)            ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 EOF
@@ -80,25 +80,21 @@ install_xray() {
 }
 
 #-------------------------------------------------------------------------------
-# ГЕНЕРАЦИЯ КЛЮЧЕЙ ДЛЯ REALITY
+# ГЕНЕРАЦИЯ КЛЮЧЕЙ ДЛЯ REALITY (ПОЛНОСТЬЮ АВТОМАТИЧЕСКАЯ)
 #-------------------------------------------------------------------------------
 generate_xray_keys() {
     print_section "ГЕНЕРАЦИЯ КЛЮЧЕЙ XRAY (REALITY)"
     
+    # Останавливаем Xray для безопасности
+    systemctl stop xray 2>/dev/null || true
+    
     # Генерируем UUID
     UUID=$(cat /proc/sys/kernel/random/uuid)
     
-    # Генерируем ключи x25519 (используем xray, если доступен)
-    if command -v xray &>/dev/null; then
-        KEY_PAIR=$(xray x25519)
-        PRIVATE_KEY=$(echo "$KEY_PAIR" | grep "Private" | awk '{print $3}')
-        PUBLIC_KEY=$(echo "$KEY_PAIR" | grep "Public" | awk '{print $3}')
-    else
-        # fallback: используем openssl для генерации ключей (не идеально, но для демо)
-        PRIVATE_KEY=$(openssl rand -base64 32)
-        PUBLIC_KEY=$(openssl rand -base64 32)
-        print_warn "Не удалось сгенерировать ключи через xray, использованы случайные"
-    fi
+    # Генерируем ключи x25519
+    KEY_PAIR=$(/usr/local/bin/xray x25519)
+    PRIVATE_KEY=$(echo "$KEY_PAIR" | grep "Private" | awk '{print $3}')
+    PUBLIC_KEY=$(echo "$KEY_PAIR" | grep "Public" | awk '{print $3}')
     
     # Короткий ID (8 байт hex)
     SHORT_ID=$(openssl rand -hex 8)
@@ -111,7 +107,10 @@ privatekey=${PRIVATE_KEY}
 publickey=${PUBLIC_KEY}
 EOF
     
-    print_ok "Ключи сгенерированы и сохранены в ${XRAY_CONFIG_DIR}/.keys"
+    print_ok "Ключи сгенерированы автоматически"
+    print_value "UUID" "${UUID}"
+    print_value "ShortID" "${SHORT_ID}"
+    print_value "PublicKey" "${PUBLIC_KEY}"
 }
 
 #-------------------------------------------------------------------------------
@@ -120,8 +119,10 @@ EOF
 create_xray_config() {
     print_section "НАСТРОЙКА XRAY (с fallback на Telemt)"
     
+    # Загружаем ключи
     source ${XRAY_CONFIG_DIR}/.keys
     
+    # Создаём конфиг
     cat > ${XRAY_CONFIG_DIR}/config.json << EOF
 {
     "log": {
@@ -216,16 +217,18 @@ EOF
 }
 
 #-------------------------------------------------------------------------------
-# ПЕРЕЗАПУСК XRAY
+# ЗАПУСК XRAY
 #-------------------------------------------------------------------------------
-restart_xray() {
-    print_section "ПЕРЕЗАПУСК XRAY"
-    systemctl restart xray
+start_xray() {
+    print_section "ЗАПУСК XRAY"
+    
+    systemctl start xray
     sleep 2
+    
     if systemctl is-active xray &>/dev/null; then
-        print_ok "Xray запущен"
+        print_ok "Xray запущен на порту 443"
     else
-        print_error "Ошибка запуска Xray. Проверьте логи: journalctl -u xray"
+        print_error "Ошибка запуска Xray. Проверьте: journalctl -u xray"
     fi
 }
 
@@ -295,6 +298,7 @@ EOF
     systemctl daemon-reload
     systemctl start telemt
     sleep 2
+    
     if systemctl is-active telemt &>/dev/null; then
         print_ok "Telemt запущен (порт ${TELEMT_PORT} → контейнер:443)"
     else
@@ -333,6 +337,7 @@ EOF
     systemctl daemon-reload
     systemctl start torrserver
     sleep 2
+    
     if systemctl is-active torrserver &>/dev/null; then
         print_ok "TorrServer запущен (порт 8090)"
     else
@@ -422,7 +427,7 @@ main() {
     install_xray
     generate_xray_keys
     create_xray_config
-    restart_xray
+    start_xray
     install_telemt
     install_torrserver
     setup_firewall
