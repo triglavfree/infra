@@ -32,7 +32,6 @@ warn() { echo -e "  ${YELLOW}⚠ $1${RESET}"; }
 err() { echo -e "  ${RED}✗ $1${RESET}" >&2; }
 info() { echo -e "  ${CYAN}ℹ $1${RESET}"; }
 
-# Идеальное выравнивание
 kv() {
     local key="$1"
     local val="$2"
@@ -90,6 +89,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# =============== ОПРЕДЕЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ===============
+detect_target_user() {
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        TARGET_USER="$SUDO_USER"
+    else
+        TARGET_USER="$(whoami)"
+    fi
+    # Получаем домашнюю директорию пользователя
+    TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+    if [ -z "$TARGET_HOME" ]; then
+        err "Не удалось определить домашнюю папку для пользователя $TARGET_USER"
+        exit 1
+    fi
+    ok "Целевой пользователь: $TARGET_USER (домашняя папка: $TARGET_HOME)"
+}
+
 # =============== ФУНКЦИИ ===============
 detect_ip() {
     step "Определение вашего IP"
@@ -122,20 +137,38 @@ detect_ip() {
 }
 
 check_keys() {
-    step "Проверка SSH-ключей"
-    if [ -f /root/.ssh/authorized_keys ] && [ -s /root/.ssh/authorized_keys ]; then
-        local n=$(grep -cE '^(ssh-(rsa|ed25519)|ecdsa)' /root/.ssh/authorized_keys 2>/dev/null || echo 0)
-        [ "$n" -gt 0 ] && { ok "SSH-ключей: $n"; chmod 700 /root/.ssh 2>/dev/null; chmod 600 /root/.ssh/authorized_keys 2>/dev/null; return 0; }
+    step "Проверка SSH-ключей для пользователя $TARGET_USER"
+    local auth_keys="$TARGET_HOME/.ssh/authorized_keys"
+    
+    if [ -f "$auth_keys" ] && [ -s "$auth_keys" ]; then
+        local n=$(grep -cE '^(ssh-(rsa|ed25519)|ecdsa)' "$auth_keys" 2>/dev/null || echo 0)
+        if [ "$n" -gt 0 ]; then
+            ok "SSH-ключей: $n"
+            # Владелец и права должны быть правильными, но проверим
+            chown -R "$TARGET_USER":"$TARGET_USER" "$TARGET_HOME/.ssh" 2>/dev/null || true
+            chmod 700 "$TARGET_HOME/.ssh" 2>/dev/null || true
+            chmod 600 "$auth_keys" 2>/dev/null || true
+            return 0
+        fi
     fi
-    err "SSH-ключи не найдены! Настройте: ssh-copy-id root@<сервер>"
+    
+    err "SSH-ключи не найдены в $auth_keys"
+    echo -e "  ${YELLOW}Добавьте свой публичный ключ командой (выполните на локальной машине):${RESET}"
+    echo -e "  ${GRAY}ssh-copy-id $TARGET_USER@<сервер>${RESET}"
+    echo -e "  ${YELLOW}или вручную скопируйте ключ в $auth_keys${RESET}"
     exit 1
 }
 
 check_root() {
     step "Проверка прав"
-    [ "$EUID" -eq 0 ] && { ok "Root OK"; return 0; }
-    err "Нужен root. Запустите: sudo $0"
-    exit 1
+    if [ "$EUID" -eq 0 ]; then
+        ok "Запущено с правами root"
+        detect_target_user
+        return 0
+    else
+        err "Недостаточно прав. Запустите с sudo: sudo $0"
+        exit 1
+    fi
 }
 
 get_disk() {
@@ -272,20 +305,32 @@ setup_swap() {
 
 harden_ssh() {
     step "Настройка SSH"
+    local sshd_config="/etc/ssh/sshd_config"
     
-    if grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config 2>/dev/null && grep -q "^PermitRootLogin prohibit-password" /etc/ssh/sshd_config 2>/dev/null; then
-        info "SSH уже настроен безопасно"
+    # Проверяем, не настроен ли уже
+    if grep -q "^PasswordAuthentication no" "$sshd_config" 2>/dev/null && \
+       grep -q "^PermitRootLogin no" "$sshd_config" 2>/dev/null && \
+       grep -q "^AllowUsers.*$TARGET_USER" "$sshd_config" 2>/dev/null; then
+        info "SSH уже настроен безопасно для пользователя $TARGET_USER"
         return 0
     fi
     
     start_spinner "Настройка SSH..."
     
-    cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.backup.$RUN_ID" 2>/dev/null || true
-    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config 2>/dev/null || true
-    sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config 2>/dev/null || true
-    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null || true
-    sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true
+    cp "$sshd_config" "${sshd_config}.backup.$RUN_ID" 2>/dev/null || true
     
+    # Отключаем парольный вход для всех
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' "$sshd_config" 2>/dev/null || true
+    sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$sshd_config" 2>/dev/null || true
+    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' "$sshd_config" 2>/dev/null || true
+    sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' "$sshd_config" 2>/dev/null || true
+    
+    # Добавляем AllowUsers для целевого пользователя (если ещё нет)
+    if ! grep -q "^AllowUsers.*$TARGET_USER" "$sshd_config" 2>/dev/null; then
+        echo "AllowUsers $TARGET_USER" >> "$sshd_config"
+    fi
+    
+    # Проверка конфигурации
     if ! sshd -t 2>/dev/null; then
         stop_spinner "error" "Ошибка в конфигурации SSH"
         return 1
@@ -297,7 +342,7 @@ harden_ssh() {
     sleep 1
     
     if systemctl is-active --quiet "$srv" 2>/dev/null; then
-        stop_spinner "success" "SSH настроен (только ключи)"
+        stop_spinner "success" "SSH настроен: вход только по ключу для пользователя $TARGET_USER, root запрещён"
     else
         stop_spinner "error" "SSH не запустился"
         return 1
@@ -314,20 +359,18 @@ setup_ufw() {
     
     start_spinner "Настройка UFW..."
     
-    # Удаляем старые правила SSH (тихо)
+    # Удаляем старые правила SSH
     local old=$(ufw status numbered 2>/dev/null | grep -E ":$SSH_PORT|SSH" | grep -oP '^\[\s*\K\d+' 2>/dev/null || echo "")
     for n in $(echo "$old" | sort -rn 2>/dev/null); do 
         [ -n "$n" ] && yes | ufw delete "$n" >/dev/null 2>&1 || true
     done
     
-    # Включаем если выключен (тихо)
     ufw status 2>/dev/null | grep -qi "active" || {
         ufw --force reset >/dev/null 2>&1 || true
         ufw default deny incoming >/dev/null 2>&1 || true
         ufw default allow outgoing >/dev/null 2>&1 || true
     }
     
-    # Добавляем правило для клиента (тихо)
     if [ -n "$CLIENT_IP" ] && [ "$CLIENT_IP" != "any" ]; then
         ufw allow from "$CLIENT_IP" to any port "$SSH_PORT" comment "SSH мой IP" >/dev/null 2>&1
     else
@@ -420,11 +463,13 @@ summary() {
     kv "TCP Fast Open" "$tfo" "$CYAN"
     [ "$syn" = "1" ] && kv "SYN Cookies" "включены ✓" "$GREEN" || kv "SYN Cookies" "отключены" "$YELLOW"
     
-    # БЕЗОПАСНОСТЬ
+    # БЕЗОПАСНОСТЬ SSH
     echo -e "\n${MAGENTA}┌─ БЕЗОПАСНОСТЬ SSH ─────────────────┐${RESET}"
     kv "Порт" "$SSH_PORT" "$CYAN"
     kv "Аутентификация" "только SSH-ключи ✓" "$GREEN"
     kv "Парольный вход" "отключён ✓" "$GREEN"
+    kv "Разрешённый пользователь" "$TARGET_USER ✓" "$GREEN"
+    kv "Вход root" "запрещён ✓" "$GREEN"
     
     # ДОСТУП
     echo -e "\n${MAGENTA}┌─ КОНТРОЛЬ ДОСТУПА ─────────────────┐${RESET}"
@@ -443,11 +488,12 @@ summary() {
     ufw status 2>/dev/null | grep -qi "active" && kv "UFW" "активен ✓" "$GREEN" || kv "UFW" "неактивен" "$YELLOW"
     systemctl is-active --quiet "$srv" 2>/dev/null && kv "SSH сервер" "работает ✓" "$GREEN" || kv "SSH сервер" "ОШИБКА!" "$RED"
     
-    # ВНИМАНИЕ - без лишних пустых строк
+    # ВНИМАНИЕ
     echo -e "\n${YELLOW}┌─ ВАЖНО ─────────────────────────────┐${RESET}"
+    echo -e "  ${WHITE}Подключайтесь только под пользователем:${RESET} ${GREEN}${BOLD}$TARGET_USER${RESET}"
     if [ -n "$CLIENT_IP" ] && [ "$CLIENT_IP" != "any" ]; then
-        echo -e "  ${WHITE}Подключайтесь ТОЛЬКО с IP:${RESET} ${GREEN}${BOLD}${CLIENT_IP}${RESET}"
-        echo -e "  ${GRAY}ssh -p $SSH_PORT root@<сервер>${RESET}"
+        echo -e "  ${WHITE}Разрешённый IP:${RESET} ${GREEN}${BOLD}${CLIENT_IP}${RESET}"
+        echo -e "  ${GRAY}ssh -p $SSH_PORT $TARGET_USER@<сервер>${RESET}"
     else
         echo -e "  ${YELLOW}Настройте ограничение по IP:${RESET}"
         echo -e "  ${GRAY}ufw allow from <IP> to any port $SSH_PORT${RESET}"
@@ -463,7 +509,7 @@ summary() {
 # =============== MAIN ===============
 main() {
     clear 2>/dev/null || true
-    header "SERVER OPTIMIZER v4.2"
+    header "SERVER OPTIMIZER v4.3 (user-mode)"
     
     check_root
     detect_ip
