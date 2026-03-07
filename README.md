@@ -68,7 +68,7 @@ bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/infra.sh
 ### VPS
 ### Оптимизатор VPS
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/triglavfree/infra/main/run.sh)
+curl -s https://raw.githubusercontent.com/triglavfree/infra/main/run.sh | sudo bash
 ```
 ### TorrServer
 ```bash
