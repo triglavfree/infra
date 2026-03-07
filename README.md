@@ -1,4 +1,3 @@
-![Linux](https://img.shields.io/badge/Linus_Torvalds-🐧-FCC624?style=flat-square&logo=linux&logoColor=black)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu_Server-24.04.4_LTS-E95420?style=flat-square&logo=ubuntu&logoColor=orange)](https://ubuntu.com/download/server)
 [![Podman](https://img.shields.io/badge/Podman-4.9.3-892CA0?style=flat-square&logo=podman&logoColor=white)](https://podman.io/)
 [![Gitea](https://img.shields.io/badge/Gitea-1.25.4-609926?style=flat-square&logo=gitea&logoColor=white)](https://github.com/go-gitea/gitea/releases/tag/v1.25.4)
