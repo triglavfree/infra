@@ -1,7 +1,13 @@
 #!/bin/bash
 set -uo pipefail
 
-SCRIPT_PATH="${BASH_SOURCE[0]}"
+# Безопасное определение пути скрипта
+if [ -n "${BASH_SOURCE:-}" ] && [ -n "${BASH_SOURCE[0]-}" ]; then
+    SCRIPT_PATH="${BASH_SOURCE[0]}"
+else
+    SCRIPT_PATH=""
+fi
+
 CLIENT_IP=""
 SSH_PORT=22
 LOG_FILE="/tmp/server-setup-$(date +%Y%m%d-%H%M%S).log"
@@ -81,7 +87,11 @@ cleanup() {
         find /root -maxdepth 1 -name "backup_[0-9]*" -type d -exec rm -rf {} + 2>/dev/null
         ok "Бэкапы удалены"
         rm -f "$LOG_FILE" 2>/dev/null
-        [ -f "$SCRIPT_PATH" ] && [ "$SCRIPT_PATH" != "/bin/bash" ] && rm -f "$SCRIPT_PATH" 2>/dev/null && ok "Скрипт удалён"
+        
+        # Удаляем сам скрипт, только если он существует и не является специальным
+        if [ -n "$SCRIPT_PATH" ] && [ -f "$SCRIPT_PATH" ] && [ "$SCRIPT_PATH" != "/bin/bash" ] && [ "$SCRIPT_PATH" != "bash" ]; then
+            rm -f "$SCRIPT_PATH" 2>/dev/null && ok "Скрипт удалён"
+        fi
     else
         warn "Ошибки — файлы сохранены"
         info "Лог: $LOG_FILE"
@@ -509,7 +519,7 @@ summary() {
 # =============== MAIN ===============
 main() {
     clear 2>/dev/null || true
-    header "SERVER OPTIMIZER v4.3 (user-mode)"
+    header "SERVER OPTIMIZER v4.4 (user-mode, universal)"
     
     check_root
     detect_ip
