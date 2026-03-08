@@ -109,15 +109,15 @@ sudo umount /mnt/usb
 ### 🕉️ Cтек технологий
 ```txt
 🐧 Linux Kernel (спасибо Линусу!)
-├── 🐳 Podman latest
-│   ├── 📦 Quadlet (systemd интеграция)
+├── 🐳 Podman
+│   ├── 📦 Quadlet
 │   ├── 🏠 Gitea latest
 │   ├── 🎥 TorrServer latest
 │   ├── 🤖 Gitea Runner
 │   └── 🌐 NetBird latest
-├── 💾 Restic latest (бэкапы)
-├── 🛡️ UFW + fail2ban (безопасность)
-└── 🚀 BBR (сетевая оптимизация)
+├── 💾 Restic latest
+├── 🛡️ UFW + fail2ban
+└── 🚀 BBR
 ```
 ### 🔐 Управление инфраструктурой
 
