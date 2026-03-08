@@ -1,10 +1,9 @@
 [![Ubuntu](https://img.shields.io/badge/Ubuntu_Server-24.04.4_LTS-E95420?style=flat-square&logo=ubuntu&logoColor=orange)](https://ubuntu.com/download/server)
 [![Podman](https://img.shields.io/badge/Podman-4.9.3-892CA0?style=flat-square&logo=podman&logoColor=white)](https://podman.io/)
-[![Gitea](https://img.shields.io/badge/Gitea-1.25.4-609926?style=flat-square&logo=gitea&logoColor=white)](https://github.com/go-gitea/gitea/releases/tag/v1.25.4)
-[![NetBird](https://img.shields.io/badge/NetBird-0.65.3-0066FF?style=flat-square&logo=netbird&logoColor=white)](https://github.com/netbirdio/netbird/releases/latest)
-[![TorrServer](https://img.shields.io/badge/TorrServer-MatriX.139-FF6B6B?style=flat-square&logo=webtorrent&logoColor=white)](https://github.com/YouROK/TorrServer/releases/latest)
-[![Restic](https://img.shields.io/badge/Restic-0.18.1-00ADD8?style=flat-square&logo=go&logoColor=white)](https://github.com/restic/restic/releases/tag/v0.18.1)
-
+[![Gitea](https://img.shields.io/github/v/release/go-gitea/gitea?style=flat-square&logo=gitea&logoColor=white&label=Gitea&color=609926)](https://github.com/go-gitea/gitea/releases/latest)
+[![NetBird](https://img.shields.io/github/v/release/netbirdio/netbird?style=flat-square&logo=netbird&logoColor=white&label=NetBird&color=0066FF)](https://github.com/netbirdio/netbird/releases/latest)
+[![TorrServer](https://img.shields.io/github/v/release/YouROK/TorrServer?style=flat-square&logo=webtorrent&logoColor=white&label=TorrServer&color=FF6B6B)](https://github.com/YouROK/TorrServer/releases/latest)
+[![Restic](https://img.shields.io/github/v/release/restic/restic?style=flat-square&logo=go&logoColor=white&label=Restic&color=00ADD8)](https://github.com/restic/restic/releases/latest)
 ---
 
 ### Быстрый старт
