@@ -109,7 +109,7 @@ sudo umount /mnt/usb
 ### 🕉️ Cтек технологий
 ```txt
 🐧 Linux Kernel (спасибо Линусу!)
-├── 🐳 Podman laresr
+├── 🐳 Podman latest
 │   ├── 📦 Quadlet (systemd интеграция)
 │   ├── 🏠 Gitea latest
 │   ├── 🎥 TorrServer latest
