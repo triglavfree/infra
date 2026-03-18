@@ -15,9 +15,8 @@
 ```bash
 sudo nano /etc/systemd/logind.conf
 ```
-2. Найдите и раскомментируйте строки
+2. Найдите и раскомментируйте строки в секции [Login]
 ```txt
-[Login]
 HandleLidSwitch=ignore
 HandleLidSwitchExternalPower=ignore
 HandleLidSwitchDocked=ignore
