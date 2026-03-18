@@ -18,13 +18,9 @@ sudo nano /etc/systemd/logind.conf
 2. Найдите и раскомментируйте строки
 ```txt
 [Login]
-# При закрытии крышки на батарее - ничего не делать
 HandleLidSwitch=ignore
-# При закрытии крышки с питанием от сети - ничего не делать
 HandleLidSwitchExternalPower=ignore
-# При закрытии крышки в док-станции - ничего не делать
 HandleLidSwitchDocked=ignore
-# Дополнительно отключить блокировку сессии при закрытии
 LidSwitchIgnoreInhibited=yes
 ```
 3. Перезагрузите службу:
